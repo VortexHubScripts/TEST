@@ -3,7 +3,16 @@
 -- its own Window/Compkiller in, we attach to that instead (combined UI).
 local ExistingWindow, ExistingCompkiller = ...
 
+print("[ExampleTab] ExistingWindow:", ExistingWindow, "type:", type(ExistingWindow))
+print("[ExampleTab] ExistingCompkiller:", ExistingCompkiller, "type:", type(ExistingCompkiller))
+
 local Compkiller = ExistingCompkiller or loadstring(game:HttpGet("https://raw.githubusercontent.com/VortexHubScripts/CompKillerBishop/refs/heads/main/v5"))()
+
+if ExistingCompkiller then
+	print("[ExampleTab] Using EXISTING Compkiller instance (not creating a new one).")
+else
+	print("[ExampleTab] No ExistingCompkiller received -- loaded a fresh Compkiller library.")
+end
 
 local Window = ExistingWindow or Compkiller.new({
 	Name = "COMPKILLER",
@@ -12,6 +21,12 @@ local Window = ExistingWindow or Compkiller.new({
 	Scale = Compkiller.Scale.Window,
 	TextSize = 15,
 })
+
+if ExistingWindow then
+	print("[ExampleTab] Using EXISTING Window (not creating a new one).")
+else
+	print("[ExampleTab] No ExistingWindow received -- created a brand new Window (this is the bug if you're loading from Bishop Hub).")
+end
 
 local ExampleTab = Window:DrawTab({
 	Name = "Example Tab",
