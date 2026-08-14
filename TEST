@@ -28,34 +28,96 @@ else
 	print("[ExampleTab] No ExistingWindow received -- created a brand new Window (this is the bug if you're loading from Bishop Hub).")
 end
 
-local ExampleTab = Window:DrawTab({
+local ConfigManager = Compkiller:ConfigManager({
+	Directory = "Compkiller-UI",
+	Config = "Example-Configs",
+})
+
+-- Watermark
+local Watermark = Window:Watermark()
+local Time = Watermark:AddText({
+	Icon = "timer",
+	Text = "TIME",
+})
+
+task.spawn(function()
+	while true do task.wait()
+		Time:SetText(Compkiller:GetTimeNow())
+	end
+end)
+
+-- Main Tab and Section
+local NormalTab = Window:DrawTab({
 	Name = "Example Tab",
 	Icon = "apple",
 })
 
-local ExampleSection = ExampleTab:DrawSection({
-	Name = "Example Tab",
+local NormalSection = NormalTab:DrawSection({
+	Name = "Controls",
 	Position = 'left'
 })
 
-local Toggle = ExampleSection:AddToggle({
-	Name = "Toggle",
+-- Toggle Button
+local Toggle = NormalSection:AddToggle({
+	Name = "Feature Toggle",
 	Flag = "Toggle_Example",
 	Default = false,
 	Risky = false,
+	Callback = function(state)
+		print("Toggle state changed to:", state)
+	end,
+})
+
+-- Text Input (TextBox)
+NormalSection:AddTextBox({
+	Name = "Input Text",
+	Default = "",
+	Placeholder = "Enter text here...",
+	Numeric = false,
+	Flag = "TextBox_Example",
+	Callback = function(text)
+		print("TextBox input:", text)
+	end,
+})
+
+-- Extra Cool Features (Slider, ColorPicker, Button)
+NormalSection:AddSlider({
+	Name = "Speed Slider",
+	Min = 0,
+	Max = 100,
+	Default = 50,
+	Round = 0,
+	Flag = "Slider_Example",
 	Callback = print,
 })
 
-ExampleSection:AddTextBox({
-	Name = "TextBox",
-	Default = "",
-	Placeholder = "Enter text...",
-	Numeric = false,
-	Flag = "TextBox_Example",
-	Callback = print
+NormalSection:AddColorPicker({
+	Name = "Theme Color",
+	Default = Color3.fromRGB(0, 255, 140),
+	Transparency = 0,
+	Flag = "Color_Picker_Example",
+	Callback = print,
 })
 
-local APSection = ExampleTab:DrawSection({
-	Name = "AP",
-	Position = "right",
+NormalSection:AddButton({
+	Name = "Action Button",
+	Callback = function()
+		print("Button clicked!")
+		local Notify = Compkiller.newNotify()
+		Notify.new({
+			Icon = "bell",
+			Title = "Success",
+			Content = "Action button was pressed!",
+			Duration = 3,
+		})
+	end,
 })
+
+-- Config Tab
+local ConfigUI = Window:DrawConfig({
+	Name = "Config",
+	Icon = "folder",
+	Config = ConfigManager,
+})
+
+ConfigUI:Init()
