@@ -3,16 +3,7 @@
 -- its own Window/Compkiller in, we attach to that instead (combined UI).
 local ExistingWindow, ExistingCompkiller = ...
 
-print("[ExampleTab] ExistingWindow:", ExistingWindow, "type:", type(ExistingWindow))
-print("[ExampleTab] ExistingCompkiller:", ExistingCompkiller, "type:", type(ExistingCompkiller))
-
 local Compkiller = ExistingCompkiller or loadstring(game:HttpGet("https://raw.githubusercontent.com/VortexHubScripts/CompKillerBishop/refs/heads/main/v5"))()
-
-if ExistingCompkiller then
-	print("[ExampleTab] Using EXISTING Compkiller instance (not creating a new one).")
-else
-	print("[ExampleTab] No ExistingCompkiller received -- loaded a fresh Compkiller library.")
-end
 
 local Window = ExistingWindow or Compkiller.new({
 	Name = "COMPKILLER",
@@ -22,29 +13,29 @@ local Window = ExistingWindow or Compkiller.new({
 	TextSize = 15,
 })
 
-if ExistingWindow then
-	print("[ExampleTab] Using EXISTING Window (not creating a new one).")
-else
-	print("[ExampleTab] No ExistingWindow received -- created a brand new Window (this is the bug if you're loading from Bishop Hub).")
+-- Window-level features (Config tab, Watermark) only make sense once per
+-- window. In combined mode the host script (Bishop Hub) already owns these,
+-- so only set them up when running standalone.
+local ConfigManager
+if not ExistingWindow then
+	ConfigManager = Compkiller:ConfigManager({
+		Directory = "Compkiller-UI",
+		Config = "Example-Configs",
+	})
+
+	local Watermark = Window:Watermark()
+	local Time = Watermark:AddText({
+		Icon = "timer",
+		Text = "TIME",
+	})
+
+	task.spawn(function()
+		while true do
+			task.wait()
+			Time:SetText(Compkiller:GetTimeNow())
+		end
+	end)
 end
-
-local ConfigManager = Compkiller:ConfigManager({
-	Directory = "Compkiller-UI",
-	Config = "Example-Configs",
-})
-
--- Watermark
-local Watermark = Window:Watermark()
-local Time = Watermark:AddText({
-	Icon = "timer",
-	Text = "TIME",
-})
-
-task.spawn(function()
-	while true do task.wait()
-		Time:SetText(Compkiller:GetTimeNow())
-	end
-end)
 
 -- Main Tab and Section
 local NormalTab = Window:DrawTab({
@@ -113,11 +104,13 @@ NormalSection:AddButton({
 	end,
 })
 
--- Config Tab
-local ConfigUI = Window:DrawConfig({
-	Name = "Config",
-	Icon = "folder",
-	Config = ConfigManager,
-})
+-- Config Tab -- standalone only; combined mode uses the host's Config tab
+if not ExistingWindow then
+	local ConfigUI = Window:DrawConfig({
+		Name = "Config",
+		Icon = "folder",
+		Config = ConfigManager,
+	})
 
-ConfigUI:Init()
+	ConfigUI:Init()
+end
