@@ -1,6 +1,11 @@
-local Compkiller = loadstring(game:HttpGet("https://raw.githubusercontent.com/VortexHubScripts/CompKillerBishop/refs/heads/main/v5"))()
+-- If launched standalone, ExistingWindow/ExistingCompkiller are nil and we
+-- build our own window (own UI). If loaded from another script that passes
+-- its own Window/Compkiller in, we attach to that instead (combined UI).
+local ExistingWindow, ExistingCompkiller = ...
 
-local Window = Compkiller.new({
+local Compkiller = ExistingCompkiller or loadstring(game:HttpGet("https://raw.githubusercontent.com/VortexHubScripts/CompKillerBishop/refs/heads/main/v5"))()
+
+local Window = ExistingWindow or Compkiller.new({
 	Name = "COMPKILLER",
 	Keybind = "LeftAlt",
 	Logo = "rbxassetid://120245531583106",
@@ -8,17 +13,17 @@ local Window = Compkiller.new({
 	TextSize = 15,
 })
 
-local NormalTab = Window:DrawTab({
+local ExampleTab = Window:DrawTab({
 	Name = "Example Tab",
 	Icon = "apple",
 })
 
-local NormalSection = NormalTab:DrawSection({
-	Name = "Section",
+local ExampleSection = ExampleTab:DrawSection({
+	Name = "Example Tab",
 	Position = 'left'
 })
 
-local Toggle = NormalSection:AddToggle({
+local Toggle = ExampleSection:AddToggle({
 	Name = "Toggle",
 	Flag = "Toggle_Example",
 	Default = false,
@@ -26,11 +31,16 @@ local Toggle = NormalSection:AddToggle({
 	Callback = print,
 })
 
-NormalSection:AddTextBox({
+ExampleSection:AddTextBox({
 	Name = "TextBox",
 	Default = "",
 	Placeholder = "Enter text...",
 	Numeric = false,
 	Flag = "TextBox_Example",
 	Callback = print
+})
+
+local APSection = ExampleTab:DrawSection({
+	Name = "AP",
+	Position = "right",
 })
