@@ -5,16 +5,17 @@
 --
 --  INTRO SEQUENCE  (CreateWindow{ Intro = true }, the default)
 --    1. Screen dims + game blurs.
---    2. Crystal shards fly in from off-screen and converge on the centre.
---    3. The gem wireframe draws itself edge by edge, then flashes.
---    4. Title letters drop in, a loading bar fills through status steps.
---    5. Window fades in, the gem winds up, arcs across the screen trailing
---       sparks and lands in the logo slot in the window's top-left corner.
+--    2. Crystal dust drifts in; the gem's eight facets fly in from all sides
+--       and lock together, then the stone flashes and settles.
+--    3. Title letters drop in, a loading bar fills through status steps.
+--    4. Window fades in, the gem winds up, arcs across the screen trailing
+--       sparks and drops into the socket in the window's top-left corner.
+--       The brand text slides out from behind it.
 --
 --  The intro runs in its own thread. CreateWindow returns immediately so you
 --  can build tabs while it plays; they're hidden until the window fades in.
 --
---  The logo is drawn with plain Frames (rotated lines), so there are no image
+--  The logo is drawn with plain Frames and UIGradients, so there are no image
 --  asset ids to get moderated or fail to load.
 --
 --  OBJECT CHAIN
@@ -183,34 +184,63 @@ end
 -- ============================================================================
 --  CRYSTAL LOGO
 -- ============================================================================
---  A cut gem in a 120x120 design space. Scale it with the holder's UIScale.
+--  A faceted gem seen face on: a diamond cut into eight flat-shaded facets,
+--  lit from the top-left, with the spectrum running around the stone.
 --
---         a----m----b            table
---        / \  / \  / \
---       c---f-----g---d          girdle
---        \   \   /   /
---         \   \ /   /
---           \  e  /              point
+--                 T
+--               / | \
+--          Mtl /  |  \ Mtr
+--             / \ | / \
+--            L----O----R
+--             \ / | \ /
+--          Mbl \  |  / Mbr
+--               \ | /
+--                 B
+--
+--  Every facet is a right isosceles triangle, which Roblox can draw without
+--  images: a square Frame rotated into place, with a UIGradient that makes
+--  the half on one side of its diagonal transparent.
+--
+--  Design space is 120x120. Scale it with the holder's UIScale.
 -- ============================================================================
 local LOGO_SIZE = 120
+local LOGO_CENTER = Vector2.new(60, 60)
+local LOGO_RADIUS = 54
 
-local LOGO_POINTS = {
-    a = Vector2.new(36, 20),  m = Vector2.new(60, 20),  b = Vector2.new(84, 20),
-    c = Vector2.new(12, 44),  f = Vector2.new(44, 44),  g = Vector2.new(76, 44),
-    d = Vector2.new(108, 44), e = Vector2.new(60, 104),
-}
+local LOGO_FACETS = (function()
+    local R, H = LOGO_RADIUS, LOGO_RADIUS / 2
+    local O = Vector2.zero
+    local T, Rt, B, L = Vector2.new(0, -R), Vector2.new(R, 0), Vector2.new(0, R), Vector2.new(-R, 0)
+    local Mtr, Mbr, Mbl, Mtl = Vector2.new(H, -H), Vector2.new(H, H), Vector2.new(-H, H), Vector2.new(-H, -H)
 
--- Draw order: outline first, then the inner facets.
-local LOGO_EDGES = {
-    { "c", "a" }, { "a", "b" }, { "b", "d" }, { "d", "e" }, { "e", "c" },
-    { "c", "d" }, { "a", "f" }, { "f", "m" }, { "m", "g" }, { "g", "b" },
-    { "f", "e" }, { "g", "e" },
-}
+    -- { hypotenuse end, hypotenuse end, right-angle corner, shade }
+    -- Clockwise from the top. Order matters: it's the assembly order in the
+    -- intro and the direction the idle shine travels.
+    return {
+        { O, T,  Mtr, Color3.fromRGB(255, 150, 214) },
+        { O, Rt, Mtr, Color3.fromRGB(196, 132, 255) },
+        { O, Rt, Mbr, Color3.fromRGB(122, 100, 226) },
+        { O, B,  Mbr, Color3.fromRGB(66, 92, 198) },
+        { O, B,  Mbl, Color3.fromRGB(74, 150, 242) },
+        { O, L,  Mbl, Color3.fromRGB(98, 214, 228) },
+        { O, L,  Mtl, Color3.fromRGB(178, 240, 248) },
+        { O, T,  Mtl, Color3.fromRGB(255, 228, 246) },
+    }
+end)()
+
+-- Opaque on the far side of the diagonal, transparent on the near side.
+local FACET_CUT = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 1),
+    NumberSequenceKeypoint.new(0.497, 1),
+    NumberSequenceKeypoint.new(0.503, 0),
+    NumberSequenceKeypoint.new(1, 0),
+})
+
+local WHITE = Color3.new(1, 1, 1)
 
 local function buildLogo(parent, opts)
     opts = opts or {}
     local hidden = opts.Hidden
-    local thickness = opts.Thickness or 3
 
     local holder = new("Frame", {
         Name = "PrismLogo",
@@ -222,93 +252,102 @@ local function buildLogo(parent, opts)
     })
     local scale = new("UIScale", { Scale = opts.Scale or 1, Parent = holder })
 
-    local logo = { Holder = holder, Scale = scale, Lines = {}, Sparkles = {}, Glows = {} }
+    -- Idle turns on the shine and glint animation once the logo is formed.
+    local logo = { Holder = holder, Scale = scale, Facets = {}, Idle = not hidden }
 
-    -- Soft inner light: stacked circles fake a radial glow.
-    for i = 1, 4 do
-        local size = 30 + i * 18
-        local glow = new("Frame", {
-            AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.fromOffset(60, 56),
-            Size = UDim2.fromOffset(size, size),
-            BackgroundColor3 = Theme.Spectrum[2],
-            BackgroundTransparency = hidden and 1 or (0.8 + i * 0.04),
-            BorderSizePixel = 0,
-            Parent = holder,
-        }, { corner("full") })
-        glow:SetAttribute("Target", 0.8 + i * 0.04)
-        table.insert(logo.Glows, glow)
-    end
-
-    -- Faint crystal body behind the wireframe.
-    logo.Body = new("Frame", {
+    -- Dark setting behind the stone. It shows through the hairline seams
+    -- between facets, which read as the cut edges.
+    local rimSide = (LOGO_RADIUS + 3) * math.sqrt(2)
+    logo.Rim = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromOffset(60, 58),
-        Size = UDim2.fromOffset(58, 58),
+        Position = UDim2.fromOffset(LOGO_CENTER.X, LOGO_CENTER.Y),
+        Size = UDim2.fromOffset(rimSide, rimSide),
         Rotation = 45,
-        BackgroundColor3 = Color3.new(1, 1, 1),
-        BackgroundTransparency = hidden and 1 or 0.86,
+        BackgroundColor3 = Color3.fromRGB(24, 19, 44),
+        BackgroundTransparency = hidden and 1 or 0,
         BorderSizePixel = 0,
         Parent = holder,
-    }, { corner(4) })
-    spectralGradient(logo.Body, 25)
+    }, { corner(3) })
 
-    local function makeLine(p1, p2, thick, transparency)
-        local delta = p2 - p1
-        local length = delta.Magnitude
-        local mid = (p1 + p2) / 2
-        local line = new("Frame", {
+    for _, def in ipairs(LOGO_FACETS) do
+        local p, q, m, color = def[1], def[2], def[3], def[4]
+
+        -- The facet is half of the square whose diagonal is p-q and which has
+        -- a corner at m. Rotate the frame so its edges run along m->p, then
+        -- point the gradient (in the frame's local space) at m.
+        local center = (p + q) / 2
+        local edge = p - m
+        local theta = math.atan2(edge.Y, edge.X)
+        local toCorner = m - center
+        local c, s = math.cos(-theta), math.sin(-theta)
+        local localDir = Vector2.new(toCorner.X * c - toCorner.Y * s, toCorner.X * s + toCorner.Y * c)
+        local home = LOGO_CENTER + center
+
+        local frame = new("Frame", {
             AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = hidden and UDim2.fromOffset(p1.X, p1.Y) or UDim2.fromOffset(mid.X, mid.Y),
-            Size = hidden and UDim2.fromOffset(0, thick) or UDim2.fromOffset(length, thick),
-            Rotation = math.deg(math.atan2(delta.Y, delta.X)),
-            BackgroundColor3 = Color3.new(1, 1, 1),
-            BackgroundTransparency = transparency,
+            Position = UDim2.fromOffset(home.X, home.Y),
+            Size = UDim2.fromOffset(edge.Magnitude, edge.Magnitude),
+            Rotation = math.deg(theta),
+            BackgroundColor3 = color,
+            BackgroundTransparency = hidden and 1 or 0,
             BorderSizePixel = 0,
             Parent = holder,
-        }, { corner("full") })
-        spectralGradient(line, 60)
-        return { Frame = line, From = p1, Mid = mid, Length = length, Glow = transparency > 0 }
-    end
-
-    for _, edge in ipairs(LOGO_EDGES) do
-        local p1, p2 = LOGO_POINTS[edge[1]], LOGO_POINTS[edge[2]]
-        local glow = makeLine(p1, p2, thickness * 3, 0.78)
-        local core = makeLine(p1, p2, thickness, 0)
-        table.insert(logo.Lines, { Core = core, Glow = glow })
-    end
-
-    -- Sparkles on the vertices that twinkle.
-    for _, key in ipairs({ "a", "b", "c", "d", "e", "m" }) do
-        local p = LOGO_POINTS[key]
-        local sparkle = new("Frame", {
-            AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.fromOffset(p.X, p.Y),
-            Size = hidden and UDim2.fromOffset(0, 0) or UDim2.fromOffset(7, 7),
-            Rotation = 45,
-            BackgroundColor3 = Color3.new(1, 1, 1),
-            BorderSizePixel = 0,
-            Parent = holder,
+        }, {
+            new("UIGradient", {
+                Transparency = FACET_CUT,
+                Rotation = math.deg(math.atan2(localDir.Y, localDir.X)),
+            }),
         })
-        sparkle:SetAttribute("Phase", math.random() * math.pi * 2)
-        table.insert(logo.Sparkles, sparkle)
+
+        table.insert(logo.Facets, {
+            Frame = frame,
+            Home = home,
+            Rotation = frame.Rotation,
+            Color = color,
+            Outward = center.Unit,
+        })
     end
 
+    -- Four-point glint on the top-left edge, where the light hits.
+    logo.Glint = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromOffset(LOGO_CENTER.X - 26, LOGO_CENTER.Y - 26),
+        Size = UDim2.fromOffset(22, 22),
+        BackgroundTransparency = 1,
+        ZIndex = 2,
+        Parent = holder,
+    }, {
+        new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(3, 22), BackgroundColor3 = WHITE, BorderSizePixel = 0,
+        }, { corner("full") }),
+        new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(22, 3), BackgroundColor3 = WHITE, BorderSizePixel = 0,
+        }, { corner("full") }),
+        new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(6, 6), Rotation = 45, BackgroundColor3 = WHITE, BorderSizePixel = 0,
+        }),
+    })
+    logo.GlintScale = new("UIScale", { Scale = hidden and 0 or 1, Parent = logo.Glint })
+
+    -- Idle: every few seconds a shine sweeps round the facets clockwise, and
+    -- the glint breathes.
     tickers[holder] = function(t)
         if not holder.Parent then
             tickers[holder] = nil
             return
         end
-        for _, s in ipairs(logo.Sparkles) do
-            s.BackgroundTransparency = 0.35 + 0.55 * (0.5 + 0.5 * math.sin(t * 3 + s:GetAttribute("Phase")))
-        end
-    end
+        if not logo.Idle then return end
 
-    function logo:SetThickness(core)
-        for _, pair in ipairs(self.Lines) do
-            pair.Core.Frame.Size = UDim2.fromOffset(pair.Core.Frame.Size.X.Offset, core)
-            pair.Glow.Frame.Size = UDim2.fromOffset(pair.Glow.Frame.Size.X.Offset, core * 3)
+        local cycle = t % 4.5
+        local wave = cycle < 1.4 and (cycle / 1.4) * 11 - 1.5 or nil
+        for i, facet in ipairs(logo.Facets) do
+            local k = wave and math.max(0, 1 - math.abs(i - wave) / 1.6) or 0
+            facet.Frame.BackgroundColor3 = facet.Color:Lerp(WHITE, 0.45 * k * k)
         end
+        logo.GlintScale.Scale = 0.75 + 0.25 * math.sin(t * 2.4)
     end
 
     return logo
@@ -451,7 +490,16 @@ end
 -- ============================================================================
 local function playIntro(window, opts)
     local gui = window.Gui
-    local viewport = gui.AbsoluteSize
+
+    -- Everything in the intro is positioned in this gui's own space. Measure
+    -- AbsolutePositions against a full-screen frame in the same gui rather
+    -- than using them raw: with IgnoreGuiInset they don't share an origin with
+    -- Position offsets, and the logo would land a topbar-height off the slot
+    -- and then snap into place.
+    local origin = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Parent = gui })
+    local function toGui(absolute) return absolute - origin.AbsolutePosition end
+
+    local viewport = origin.AbsoluteSize
     if viewport.X == 0 then viewport = workspace.CurrentCamera.ViewportSize end
 
     local START_SCALE = 1.5
@@ -478,85 +526,81 @@ local function playIntro(window, opts)
     local logo = buildLogo(gui, { Hidden = true, Scale = START_SCALE, ZIndex = 60 })
     logo.Holder.Position = UDim2.fromOffset(center.X, center.Y)
 
-    local function vertexOnScreen(p)
-        return center + (p - Vector2.new(LOGO_SIZE / 2, LOGO_SIZE / 2)) * START_SCALE
+    -- Scatter the facets: each starts far out along its own direction, spun.
+    for _, facet in ipairs(logo.Facets) do
+        local out = facet.Home + facet.Outward * math.random(150, 230)
+        facet.Frame.Position = UDim2.fromOffset(out.X, out.Y)
+        facet.Frame.Rotation = facet.Rotation + math.random(-220, 220)
     end
 
     task.wait(0.2)
 
-    -- 2. Shards converge ----------------------------------------------------
-    local vertexList = {}
-    for _, p in pairs(LOGO_POINTS) do table.insert(vertexList, p) end
-
-    for _ = 1, 34 do
+    -- 2. Crystal dust drifts in ---------------------------------------------
+    for _ = 1, 22 do
         local angle = math.random() * math.pi * 2
-        local dist = math.random(280, 560)
-        local from = center + Vector2.new(math.cos(angle), math.sin(angle)) * dist
-        local to = vertexOnScreen(vertexList[math.random(1, #vertexList)])
-        local size = math.random(5, 10)
-        local shard = new("Frame", {
+        local from = center + Vector2.new(math.cos(angle), math.sin(angle)) * math.random(280, 560)
+        local to = center + Vector2.new(math.random(-40, 40), math.random(-40, 40)) * START_SCALE
+        local size = math.random(3, 7)
+        local mote = new("Frame", {
             AnchorPoint = Vector2.new(0.5, 0.5),
             Position = UDim2.fromOffset(from.X, from.Y),
-            Size = UDim2.fromOffset(size, size * 1.6),
-            Rotation = math.random(0, 360),
+            Size = UDim2.fromOffset(size, size),
+            Rotation = 45,
             BackgroundColor3 = randomSpectrum(),
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
             Parent = fx,
         })
-        task.delay(math.random() * 0.5, function()
-            local travel = 0.6 + math.random() * 0.35
-            tween(shard, 0.15, { BackgroundTransparency = 0 })
-            tween(shard, travel, { Position = UDim2.fromOffset(to.X, to.Y), Rotation = shard.Rotation + 220 }, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut)
+        task.delay(math.random() * 0.4, function()
+            local travel = 0.7 + math.random() * 0.3
+            tween(mote, 0.2, { BackgroundTransparency = 0.2 })
+            tween(mote, travel, { Position = UDim2.fromOffset(to.X, to.Y) }, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut)
             task.wait(travel)
-            tween(shard, 0.25, { Size = UDim2.fromOffset(0, 0), BackgroundTransparency = 1 })
+            tween(mote, 0.25, { Size = UDim2.fromOffset(0, 0), BackgroundTransparency = 1 })
             task.wait(0.25)
-            shard:Destroy()
+            mote:Destroy()
         end)
     end
 
-    task.wait(0.75)
+    task.wait(0.35)
 
-    -- 3. Wireframe draws in --------------------------------------------------
-    for i, pair in ipairs(logo.Lines) do
+    -- 3. Facets fly in and lock together ------------------------------------
+    for i, facet in ipairs(logo.Facets) do
         task.delay((i - 1) * 0.07, function()
-            for _, part in ipairs({ pair.Glow, pair.Core }) do
-                local f = part.Frame
-                tween(f, 0.32, {
-                    Position = UDim2.fromOffset(part.Mid.X, part.Mid.Y),
-                    Size = UDim2.fromOffset(part.Length, f.Size.Y.Offset),
-                }, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-            end
+            tween(facet.Frame, 0.75, {
+                Position = UDim2.fromOffset(facet.Home.X, facet.Home.Y),
+                Rotation = facet.Rotation,
+                BackgroundTransparency = 0,
+            }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
         end)
     end
-    task.wait(#logo.Lines * 0.07 + 0.25)
+    task.wait(#logo.Facets * 0.07 + 0.6)
 
-    -- Facets light up + flash ring
-    tween(logo.Body, 0.6, { BackgroundTransparency = 0.86 })
-    for _, glow in ipairs(logo.Glows) do
-        tween(glow, 0.6, { BackgroundTransparency = glow:GetAttribute("Target") })
+    -- Lock-in: the setting appears, the stone flashes white and settles to
+    -- its colours, glint pops, ring goes out.
+    tween(logo.Rim, 0.2, { BackgroundTransparency = 0 })
+    for _, facet in ipairs(logo.Facets) do
+        facet.Frame.BackgroundColor3 = WHITE
+        tween(facet.Frame, 0.7, { BackgroundColor3 = facet.Color }, Enum.EasingStyle.Quad)
     end
-    for i, s in ipairs(logo.Sparkles) do
-        task.delay(i * 0.04, function()
-            tween(s, 0.35, { Size = UDim2.fromOffset(7, 7) }, Enum.EasingStyle.Back)
-        end)
-    end
+    tween(logo.GlintScale, 0.5, { Scale = 1 }, Enum.EasingStyle.Back)
 
     local ring = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.fromOffset(center.X, center.Y),
         Size = UDim2.fromOffset(60, 60),
+        Rotation = 45,
         BackgroundTransparency = 1,
         ZIndex = 58,
         Parent = fx,
-    }, { corner("full") })
-    local ringStroke = stroke(Color3.new(1, 1, 1), 3, 0)
+    }, { corner(6) })
+    local ringStroke = stroke(WHITE, 2, 0)
     ringStroke.Parent = ring
-    spectralGradient(ringStroke, 120)
-    tween(ring, 0.8, { Size = UDim2.fromOffset(460, 460) })
-    tween(ringStroke, 0.8, { Transparency = 1, Thickness = 1 })
-    tween(logo.Scale, 0.12, { Scale = START_SCALE * 1.08 }).Completed:Wait()
+    tween(ring, 0.8, { Size = UDim2.fromOffset(380, 380) })
+    tween(ringStroke, 0.8, { Transparency = 1 })
+    tween(logo.Scale, 0.1, { Scale = START_SCALE * 1.06 }).Completed:Wait()
     tween(logo.Scale, 0.4, { Scale = START_SCALE }, Enum.EasingStyle.Back)
+    task.delay(0.6, function() logo.Idle = true end)
 
     -- 4. Title + loading bar -------------------------------------------------
     local title = string.upper(opts.Title or "PRISM")
@@ -594,12 +638,11 @@ local function playIntro(window, opts)
             BackgroundTransparency = 1,
             Font = Enum.Font.GothamBlack,
             Text = title:sub(i, i),
-            TextColor3 = Color3.new(1, 1, 1),
+            TextColor3 = Theme.Text,
             TextSize = 40,
             TextTransparency = 1,
             Parent = slot,
         })
-        spectralGradient(letter, 50)
         table.insert(letters, letter)
         task.delay((i - 1) * 0.06, function()
             tween(letter, 0.5, { Position = UDim2.fromOffset(0, 0), TextTransparency = 0 }, Enum.EasingStyle.Back)
@@ -630,7 +673,7 @@ local function playIntro(window, opts)
     }, { corner("full") })
     local fill = new("Frame", {
         Size = UDim2.fromScale(0, 1),
-        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundColor3 = WHITE,
         BorderSizePixel = 0,
         Parent = track,
     }, { corner("full") })
@@ -678,34 +721,44 @@ local function playIntro(window, opts)
     window:_reveal(0.55)
 
     -- Wind-up before launch
-    tween(logo.Scale, 0.22, { Scale = START_SCALE * 1.12 }, Enum.EasingStyle.Quad).Completed:Wait()
+    tween(logo.Scale, 0.22, { Scale = START_SCALE * 1.1 }, Enum.EasingStyle.Quad).Completed:Wait()
 
-    -- Flight: quadratic bezier that arcs up and over to the logo slot, spinning
-    -- and shrinking, line thickness growing so it stays crisp at small size.
+    -- Flight: quadratic bezier that arcs up and over to the logo slot,
+    -- spinning and shrinking. The target is re-read every frame so it tracks
+    -- the window while it scales in. Scale ends at exactly what the docked
+    -- logo will render at, so nothing jumps on the hand-off.
     local slot = window.LogoSlot
+    local socket = window.Socket
+    local dockScale = slot.Size.X.Offset / LOGO_SIZE
     local fromScale = logo.Scale.Scale
     local fromPos = center
-    local duration = 0.95
+    local duration = 1.0
     local started = os.clock()
     local lastSpark = 0
+    local socketLit = false
 
     while true do
         local alpha = math.clamp((os.clock() - started) / duration, 0, 1)
         local e = TweenService:GetValue(alpha, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut)
 
-        local target = slot.AbsolutePosition + slot.AbsoluteSize / 2
-        local endScale = slot.AbsoluteSize.X / LOGO_SIZE
+        local target = toGui(slot.AbsolutePosition + slot.AbsoluteSize / 2)
         local control = Vector2.new(lerp(fromPos.X, target.X, 0.2), math.min(fromPos.Y, target.Y) - 160)
         local pos = fromPos * ((1 - e) ^ 2) + control * (2 * (1 - e) * e) + target * (e ^ 2)
 
         logo.Holder.Position = UDim2.fromOffset(pos.X, pos.Y)
         logo.Holder.Rotation = -360 * e
-        logo.Scale.Scale = lerp(fromScale, endScale, e)
-        logo:SetThickness(lerp(3, 5.5, e))
+        logo.Scale.Scale = lerp(fromScale, dockScale * window.RootScale.Scale, e)
+
+        -- The empty socket in the window lights up as the stone closes in.
+        if socket and not socketLit and e > 0.55 then
+            socketLit = true
+            local socketStroke = socket:FindFirstChildOfClass("UIStroke")
+            tween(socketStroke, 0.3, { Transparency = 0, Color = Theme.Accent })
+        end
 
         if alpha > 0.04 and alpha < 0.96 and os.clock() - lastSpark > 0.016 then
             lastSpark = os.clock()
-            local s = math.random(3, 7)
+            local s = math.random(3, 6)
             local spark = new("Frame", {
                 AnchorPoint = Vector2.new(0.5, 0.5),
                 Position = UDim2.fromOffset(pos.X + math.random(-6, 6), pos.Y + math.random(-6, 6)),
@@ -728,35 +781,55 @@ local function playIntro(window, opts)
         RunService.RenderStepped:Wait()
     end
 
-    -- Landing: dock into the slot, pulse ring, little bounce. Design size, not
-    -- AbsoluteSize, since the window's UIScale now applies to the logo too.
-    local endScale = slot.Size.X.Offset / LOGO_SIZE
+    -- 6. Landing -------------------------------------------------------------
+    local landAt = toGui(slot.AbsolutePosition + slot.AbsoluteSize / 2)
+
+    -- Impact sparks, in screen space so they spill over the window edge.
+    for i = 1, 10 do
+        local angle = (i / 10) * math.pi * 2 + math.random() * 0.3
+        local dir = Vector2.new(math.cos(angle), math.sin(angle))
+        local to = landAt + dir * math.random(26, 46)
+        local spark = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset(landAt.X, landAt.Y),
+            Size = UDim2.fromOffset(4, 4),
+            Rotation = 45,
+            BackgroundColor3 = randomSpectrum(),
+            BorderSizePixel = 0,
+            Parent = fx,
+        })
+        tween(spark, 0.45, { Position = UDim2.fromOffset(to.X, to.Y), Size = UDim2.fromOffset(0, 0), BackgroundTransparency = 1 })
+    end
+
+    -- Dock. Same on-screen position and size as the last flight frame.
     logo.Holder.Rotation = 0
     logo.Holder.ZIndex = 5
     logo.Holder.Parent = slot
     logo.Holder.Position = UDim2.fromScale(0.5, 0.5)
+    logo.Scale.Scale = dockScale
     window.Logo = logo
 
-    local pulse = new("Frame", {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromScale(0.5, 0.5),
-        Size = UDim2.fromOffset(slot.AbsoluteSize.X, slot.AbsoluteSize.X),
-        BackgroundTransparency = 1,
-        Parent = slot,
-    }, { corner("full") })
-    local pulseStroke = stroke(Color3.new(1, 1, 1), 2, 0)
-    pulseStroke.Parent = pulse
-    spectralGradient(pulseStroke, 120)
-    tween(pulse, 0.6, { Size = UDim2.fromOffset(slot.AbsoluteSize.X * 2.4, slot.AbsoluteSize.X * 2.4) })
-    tween(pulseStroke, 0.6, { Transparency = 1 })
-    tween(logo.Scale, 0.1, { Scale = endScale * 1.18 }, Enum.EasingStyle.Quad).Completed:Wait()
-    tween(logo.Scale, 0.45, { Scale = endScale }, Enum.EasingStyle.Back)
+    if socket then
+        local socketStroke = socket:FindFirstChildOfClass("UIStroke")
+        tween(socket, 0.45, { Size = UDim2.fromOffset(socket.Size.X.Offset * 1.8, socket.Size.Y.Offset * 1.8) })
+        tween(socketStroke, 0.45, { Transparency = 1 })
+        task.delay(0.5, function() socket:Destroy() end)
+        window.Socket = nil
+    end
+
+    tween(logo.Scale, 0.08, { Scale = dockScale * 1.18 }, Enum.EasingStyle.Quad).Completed:Connect(function()
+        tween(logo.Scale, 0.45, { Scale = dockScale }, Enum.EasingStyle.Back)
+    end)
+    tween(window.RootScale, 0.08, { Scale = 1.01 }, Enum.EasingStyle.Quad).Completed:Connect(function()
+        tween(window.RootScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+    end)
+    window:_revealBrand()
 
     task.wait(0.7)
-    pulse:Destroy()
     overlay:Destroy()
     textBlock:Destroy()
     fx:Destroy()
+    origin:Destroy()
     if blur then blur:Destroy() end
 end
 
@@ -1454,19 +1527,18 @@ function Prism:CreateWindow(opts)
         BackgroundTransparency = 1,
         Parent = brand,
     })
-    local titleLabel = new("TextLabel", {
+    self.BrandTitle = new("TextLabel", {
         Position = UDim2.fromOffset(62, 16),
         Size = UDim2.new(1, -70, 0, 20),
         BackgroundTransparency = 1,
         Font = Enum.Font.GothamBlack,
         Text = string.upper(opts.Title or "Prism"),
-        TextColor3 = Color3.new(1, 1, 1),
+        TextColor3 = Theme.Text,
         TextSize = 18,
         TextXAlignment = Enum.TextXAlignment.Left,
         Parent = brand,
     })
-    spectralGradient(titleLabel, 35)
-    new("TextLabel", {
+    self.BrandSubtitle = new("TextLabel", {
         Position = UDim2.fromOffset(62, 36),
         Size = UDim2.new(1, -70, 0, 14),
         BackgroundTransparency = 1,
@@ -1611,13 +1683,29 @@ function Prism:CreateWindow(opts)
         self.Border.BackgroundTransparency = 1
         self.RootScale.Scale = 0.94
         root.Visible = false
+
+        -- Empty diamond socket the logo flies into. The brand text stays
+        -- hidden until the logo lands, then slides out from behind it.
+        self.Socket = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(26, 26),
+            Rotation = 45,
+            BackgroundTransparency = 1,
+            Parent = self.LogoSlot,
+        }, { corner(2), stroke(Theme.Stroke, 1.5, 0.2) })
+        for _, label in ipairs({ self.BrandTitle, self.BrandSubtitle }) do
+            label.TextTransparency = 1
+            label.Position -= UDim2.fromOffset(12, 0)
+        end
+
         task.spawn(playIntro, self, {
             Title = opts.IntroTitle or opts.Title or "Prism",
             Tagline = opts.Tagline or "crystal clear scripting",
             Steps = opts.IntroSteps,
         })
     else
-        local logo = buildLogo(self.LogoSlot, { Scale = 40 / LOGO_SIZE, Thickness = 5.5 })
+        local logo = buildLogo(self.LogoSlot, { Scale = self.LogoSlot.Size.X.Offset / LOGO_SIZE })
         logo.Holder.Position = UDim2.fromScale(0.5, 0.5)
         self.Logo = logo
     end
@@ -1630,6 +1718,17 @@ function Window:_reveal(time)
     tween(self.Main, time, { GroupTransparency = 0 })
     tween(self.Border, time, { BackgroundTransparency = 0.45 })
     tween(self.RootScale, time, { Scale = 1 }, Enum.EasingStyle.Back)
+end
+
+function Window:_revealBrand()
+    for i, label in ipairs({ self.BrandTitle, self.BrandSubtitle }) do
+        task.delay((i - 1) * 0.08, function()
+            tween(label, 0.5, {
+                TextTransparency = 0,
+                Position = label.Position + UDim2.fromOffset(12, 0),
+            })
+        end)
+    end
 end
 
 function Window:SetVisible(visible)
