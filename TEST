@@ -820,8 +820,8 @@ local function playIntro(window, opts)
     tween(logo.Scale, 0.08, { Scale = dockScale * 1.18 }, Enum.EasingStyle.Quad).Completed:Connect(function()
         tween(logo.Scale, 0.45, { Scale = dockScale }, Enum.EasingStyle.Back)
     end)
-    tween(window.RootScale, 0.08, { Scale = 1.01 }, Enum.EasingStyle.Quad).Completed:Connect(function()
-        tween(window.RootScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+    tween(window.RootScale, 0.08, { Scale = window.BaseScale * 1.01 }, Enum.EasingStyle.Quad).Completed:Connect(function()
+        tween(window.RootScale, 0.35, { Scale = window.BaseScale }, Enum.EasingStyle.Back)
     end)
     window:_revealBrand()
 
@@ -1073,11 +1073,11 @@ function Section:Dropdown(opts)
     frame.ClipsDescendants = true
 
     local header = new("Frame", { Size = UDim2.new(1, 0, 0, 34), BackgroundTransparency = 1, Parent = frame })
-    elementLabel(header, opts.Name or "Dropdown", 150)
+    elementLabel(header, opts.Name or "Dropdown").Size = UDim2.new(0.5, -12, 1, 0)
     local valueLabel = new("TextLabel", {
         AnchorPoint = Vector2.new(1, 0),
         Position = UDim2.new(1, -30, 0, 0),
-        Size = UDim2.new(0.5, -20, 1, 0),
+        Size = UDim2.new(0.5, -36, 1, 0),
         BackgroundTransparency = 1,
         Font = Enum.Font.Gotham,
         TextColor3 = Theme.SubText,
@@ -1210,11 +1210,11 @@ end
 -- Textbox -------------------------------------------------------------------
 function Section:Textbox(opts)
     local frame = baseElement(self)
-    elementLabel(frame, opts.Name or "Textbox", 160)
+    elementLabel(frame, opts.Name or "Textbox").Size = UDim2.new(0.5, -12, 1, 0)
     local box = new("TextBox", {
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, -6, 0.5, 0),
-        Size = UDim2.fromOffset(130, 24),
+        Size = UDim2.new(0.5, -12, 0, 24),
         BackgroundColor3 = Theme.Background,
         BorderSizePixel = 0,
         ClearTextOnFocus = false,
@@ -1251,18 +1251,18 @@ end
 -- Keybind -------------------------------------------------------------------
 function Section:Keybind(opts)
     local frame = baseElement(self)
-    elementLabel(frame, opts.Name or "Keybind", 110)
+    elementLabel(frame, opts.Name or "Keybind", 120)
     local keyButton = new("TextButton", {
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, -6, 0.5, 0),
-        Size = UDim2.fromOffset(70, 24),
-        AutomaticSize = Enum.AutomaticSize.X,
+        Size = UDim2.fromOffset(96, 24),
         BackgroundColor3 = Theme.Background,
         BorderSizePixel = 0,
         AutoButtonColor = false,
         Font = Enum.Font.GothamBold,
         TextColor3 = Theme.SubText,
         TextSize = 12,
+        TextTruncate = Enum.TextTruncate.AtEnd,
         Parent = frame,
     }, { corner(4), padding(0, 0, 8, 8) })
     local keyStroke = stroke(Theme.Stroke)
@@ -1381,6 +1381,8 @@ Tab.__index = Tab
 
 function Tab:Section(opts)
     opts = opts or {}
+    -- With one column (the default) Left and Right are the same frame, so
+    -- sections just stack in the order they're made.
     local column = (opts.Side == "Right") and self.Right or self.Left
 
     local frame = new("Frame", {
@@ -1460,8 +1462,12 @@ function Prism:CreateWindow(opts)
     self.Visible = true
     self.ToggleKey = opts.ToggleKey or Enum.KeyCode.RightShift
     self.ConfigFolder = opts.ConfigFolder or "Prism"
-    local width, height = (opts.Size or Vector2.new(620, 430)).X, (opts.Size or Vector2.new(620, 430)).Y
+    self.Columns = opts.Columns or 1
+    local size = opts.Size or Vector2.new(560, 660)
+    local width, height = size.X, size.Y
     local useIntro = opts.Intro ~= false
+
+    local HEADER, TABBAR, FOOTER = 74, 50, 54
 
     local gui = new("ScreenGui", {
         Name = "Prism",
@@ -1483,16 +1489,29 @@ function Prism:CreateWindow(opts)
         Parent = gui,
     })
     self.Root = root
-    self.RootScale = new("UIScale", { Scale = 1, Parent = root })
+
+    -- BaseScale shrinks the window to fit small screens. Every scale
+    -- animation is relative to it.
+    local camera = workspace.CurrentCamera
+    local function fitScale()
+        local viewport = camera.ViewportSize
+        return math.min(1, (viewport.X - 40) / width, (viewport.Y - 40) / height)
+    end
+    self.BaseScale = fitScale()
+    self.RootScale = new("UIScale", { Scale = self.BaseScale, Parent = root })
+    table.insert(self._conns, camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+        self.BaseScale = fitScale()
+        if self.Visible then self.RootScale.Scale = self.BaseScale end
+    end))
 
     self.Border = new("Frame", {
         Position = UDim2.fromOffset(-1, -1),
         Size = UDim2.new(1, 2, 1, 2),
-        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundColor3 = WHITE,
         BackgroundTransparency = 0.45,
         BorderSizePixel = 0,
         Parent = root,
-    }, { corner(13) })
+    }, { corner(15) })
     spectralGradient(self.Border, 20)
 
     local main = new("CanvasGroup", {
@@ -1500,86 +1519,142 @@ function Prism:CreateWindow(opts)
         BackgroundColor3 = Theme.Background,
         BorderSizePixel = 0,
         Parent = root,
-    }, { corner(12) })
+    }, { corner(14) })
     self.Main = main
 
-    -- Sidebar ---------------------------------------------------------------
-    local sidebar = new("Frame", {
-        Size = UDim2.new(0, 180, 1, 0),
+    local function divider(y, parent)
+        return new("Frame", {
+            Position = UDim2.new(0, 16, 0, y),
+            Size = UDim2.new(1, -32, 0, 1),
+            BackgroundColor3 = Theme.Stroke,
+            BackgroundTransparency = 0.4,
+            BorderSizePixel = 0,
+            Parent = parent or main,
+        })
+    end
+
+    -- Header ----------------------------------------------------------------
+    local header = new("Frame", {
+        Size = UDim2.new(1, 0, 0, HEADER),
         BackgroundColor3 = Theme.Sidebar,
         BorderSizePixel = 0,
         Parent = main,
     })
-    new("Frame", {
-        AnchorPoint = Vector2.new(1, 0),
-        Position = UDim2.fromScale(1, 0),
-        Size = UDim2.new(0, 1, 1, 0),
-        BackgroundColor3 = Theme.Stroke,
-        BackgroundTransparency = 0.4,
-        BorderSizePixel = 0,
-        Parent = sidebar,
-    })
+    makeDraggable(header, root, self._conns)
 
-    local brand = new("Frame", { Size = UDim2.new(1, 0, 0, 68), BackgroundTransparency = 1, Parent = sidebar })
     self.LogoSlot = new("Frame", {
-        Position = UDim2.fromOffset(14, 14),
-        Size = UDim2.fromOffset(40, 40),
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 18, 0.5, 0),
+        Size = UDim2.fromOffset(42, 42),
         BackgroundTransparency = 1,
-        Parent = brand,
+        Parent = header,
     })
     self.BrandTitle = new("TextLabel", {
-        Position = UDim2.fromOffset(62, 16),
-        Size = UDim2.new(1, -70, 0, 20),
+        Position = UDim2.fromOffset(72, 18),
+        Size = UDim2.new(1, -170, 0, 22),
         BackgroundTransparency = 1,
         Font = Enum.Font.GothamBlack,
         Text = string.upper(opts.Title or "Prism"),
         TextColor3 = Theme.Text,
-        TextSize = 18,
+        TextSize = 20,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = brand,
+        Parent = header,
     })
     self.BrandSubtitle = new("TextLabel", {
-        Position = UDim2.fromOffset(62, 36),
-        Size = UDim2.new(1, -70, 0, 14),
+        Position = UDim2.fromOffset(72, 40),
+        Size = UDim2.new(1, -170, 0, 16),
         BackgroundTransparency = 1,
         Font = Enum.Font.Gotham,
         Text = opts.Subtitle or "Script Hub",
         TextColor3 = Theme.Muted,
         TextSize = 12,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = brand,
+        Parent = header,
     })
-    makeDraggable(brand, root, self._conns)
 
+    local function headerButton(text, offset, onClick)
+        local b = new("TextButton", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, offset, 0.5, 0),
+            Size = UDim2.fromOffset(30, 30),
+            BackgroundColor3 = Theme.Element,
+            BackgroundTransparency = 1,
+            AutoButtonColor = false,
+            Font = Enum.Font.GothamBold,
+            Text = text,
+            TextColor3 = Theme.Muted,
+            TextSize = 16,
+            Parent = header,
+        }, { corner(8) })
+        b.MouseEnter:Connect(function() tween(b, 0.2, { BackgroundTransparency = 0, TextColor3 = Theme.Text }) end)
+        b.MouseLeave:Connect(function() tween(b, 0.2, { BackgroundTransparency = 1, TextColor3 = Theme.Muted }) end)
+        b.MouseButton1Click:Connect(onClick)
+    end
+    headerButton("×", -16, function() self:Destroy() end)
+    headerButton("–", -50, function()
+        self:SetVisible(false)
+        Prism:Notify({ Title = "Prism hidden", Content = "Press " .. self.ToggleKey.Name .. " to bring it back.", Duration = 3 })
+    end)
+
+    -- Tab bar ---------------------------------------------------------------
+    local tabBar = new("Frame", {
+        Position = UDim2.fromOffset(0, HEADER),
+        Size = UDim2.new(1, 0, 0, TABBAR),
+        BackgroundColor3 = Theme.Sidebar,
+        BorderSizePixel = 0,
+        Parent = main,
+    })
+    divider(0, tabBar)
     self.TabList = new("ScrollingFrame", {
-        Position = UDim2.fromOffset(10, 76),
-        Size = UDim2.new(1, -20, 1, -140),
+        Position = UDim2.fromOffset(14, 8),
+        Size = UDim2.new(1, -28, 1, -16),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         ScrollBarThickness = 0,
+        ScrollingDirection = Enum.ScrollingDirection.X,
         CanvasSize = UDim2.new(),
-        AutomaticCanvasSize = Enum.AutomaticSize.Y,
-        Parent = sidebar,
-    }, { new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
+        AutomaticCanvasSize = Enum.AutomaticSize.X,
+        Parent = tabBar,
+    }, {
+        new("UIListLayout", {
+            FillDirection = Enum.FillDirection.Horizontal,
+            VerticalAlignment = Enum.VerticalAlignment.Center,
+            Padding = UDim.new(0, 6),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }),
+    })
+    divider(HEADER + TABBAR - 1)
 
-    -- Profile card at the bottom of the sidebar
-    local profile = new("Frame", {
+    -- Pages -----------------------------------------------------------------
+    self.Pages = new("Frame", {
+        Position = UDim2.fromOffset(0, HEADER + TABBAR),
+        Size = UDim2.new(1, 0, 1, -(HEADER + TABBAR + FOOTER)),
+        BackgroundTransparency = 1,
+        ClipsDescendants = true,
+        Parent = main,
+    })
+
+    -- Footer ----------------------------------------------------------------
+    local footer = new("Frame", {
         AnchorPoint = Vector2.new(0, 1),
-        Position = UDim2.new(0, 10, 1, -10),
-        Size = UDim2.new(1, -20, 0, 46),
-        BackgroundColor3 = Theme.Panel,
+        Position = UDim2.fromScale(0, 1),
+        Size = UDim2.new(1, 0, 0, FOOTER),
+        BackgroundColor3 = Theme.Sidebar,
         BorderSizePixel = 0,
-        Parent = sidebar,
-    }, { corner(8), stroke(Theme.Stroke, 1, 0.4) })
+        Parent = main,
+    })
+    divider(0, footer)
+    makeDraggable(footer, root, self._conns)
+
     local avatar = new("ImageLabel", {
         AnchorPoint = Vector2.new(0, 0.5),
-        Position = UDim2.new(0, 8, 0.5, 0),
+        Position = UDim2.new(0, 18, 0.5, 0),
         Size = UDim2.fromOffset(30, 30),
         BackgroundColor3 = Theme.Element,
         BorderSizePixel = 0,
-        Parent = profile,
+        Parent = footer,
     }, { corner("full") })
-    local avatarRing = stroke(Color3.new(1, 1, 1), 1.5)
+    local avatarRing = stroke(WHITE, 1.5)
     avatarRing.Parent = avatar
     spectralGradient(avatarRing, 60)
     task.spawn(function()
@@ -1587,89 +1662,67 @@ function Prism:CreateWindow(opts)
         if ok then avatar.Image = img end
     end)
     new("TextLabel", {
-        Position = UDim2.fromOffset(46, 8),
-        Size = UDim2.new(1, -52, 0, 16),
+        Position = UDim2.fromOffset(58, 11),
+        Size = UDim2.new(0.5, -58, 0, 16),
         BackgroundTransparency = 1,
         Font = Enum.Font.GothamBold,
         Text = LocalPlayer.DisplayName,
         TextColor3 = Theme.Text,
-        TextSize = 12,
+        TextSize = 13,
         TextTruncate = Enum.TextTruncate.AtEnd,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = profile,
+        Parent = footer,
     })
     new("TextLabel", {
-        Position = UDim2.fromOffset(46, 24),
-        Size = UDim2.new(1, -52, 0, 14),
+        Position = UDim2.fromOffset(58, 28),
+        Size = UDim2.new(0.5, -58, 0, 14),
         BackgroundTransparency = 1,
         Font = Enum.Font.Gotham,
         Text = opts.Footer or ("v" .. Prism.Version),
         TextColor3 = Theme.Muted,
         TextSize = 11,
+        TextTruncate = Enum.TextTruncate.AtEnd,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = profile,
+        Parent = footer,
     })
 
-    -- Content ---------------------------------------------------------------
-    local content = new("Frame", {
-        Position = UDim2.fromOffset(181, 0),
-        Size = UDim2.new(1, -181, 1, 0),
+    -- Toggle key hint on the right
+    local hint = new("Frame", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -18, 0.5, 0),
+        Size = UDim2.fromOffset(0, 24),
+        AutomaticSize = Enum.AutomaticSize.X,
         BackgroundTransparency = 1,
-        Parent = main,
+        Parent = footer,
+    }, {
+        new("UIListLayout", {
+            FillDirection = Enum.FillDirection.Horizontal,
+            VerticalAlignment = Enum.VerticalAlignment.Center,
+            Padding = UDim.new(0, 8),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }),
     })
-    local topbar = new("Frame", { Size = UDim2.new(1, 0, 0, 52), BackgroundTransparency = 1, Parent = content })
-    makeDraggable(topbar, root, self._conns)
-    self.PageTitle = new("TextLabel", {
-        Position = UDim2.fromOffset(20, 0),
-        Size = UDim2.new(1, -120, 1, 0),
-        BackgroundTransparency = 1,
+    self.KeyHint = new("TextLabel", {
+        Size = UDim2.fromOffset(0, 22),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = Theme.Element,
         Font = Enum.Font.GothamBold,
-        Text = "",
-        TextColor3 = Theme.Text,
-        TextSize = 17,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = topbar,
-    })
-    new("Frame", {
-        AnchorPoint = Vector2.new(0, 1),
-        Position = UDim2.new(0, 14, 1, 0),
-        Size = UDim2.new(1, -28, 0, 1),
-        BackgroundColor3 = Theme.Stroke,
-        BackgroundTransparency = 0.4,
-        BorderSizePixel = 0,
-        Parent = topbar,
-    })
-
-    local function topButton(text, offset, onClick)
-        local b = new("TextButton", {
-            AnchorPoint = Vector2.new(1, 0.5),
-            Position = UDim2.new(1, offset, 0.5, 0),
-            Size = UDim2.fromOffset(26, 26),
-            BackgroundColor3 = Theme.Element,
-            BackgroundTransparency = 1,
-            AutoButtonColor = false,
-            Font = Enum.Font.GothamBold,
-            Text = text,
-            TextColor3 = Theme.Muted,
-            TextSize = 14,
-            Parent = topbar,
-        }, { corner(6) })
-        b.MouseEnter:Connect(function() tween(b, 0.2, { BackgroundTransparency = 0, TextColor3 = Theme.Text }) end)
-        b.MouseLeave:Connect(function() tween(b, 0.2, { BackgroundTransparency = 1, TextColor3 = Theme.Muted }) end)
-        b.MouseButton1Click:Connect(onClick)
-    end
-    topButton("×", -14, function() self:Destroy() end)
-    topButton("–", -44, function()
-        self:SetVisible(false)
-        Prism:Notify({ Title = "Prism hidden", Content = "Press " .. self.ToggleKey.Name .. " to bring it back.", Duration = 3 })
-    end)
-
-    self.Pages = new("Frame", {
-        Position = UDim2.fromOffset(0, 52),
-        Size = UDim2.new(1, 0, 1, -52),
+        Text = self.ToggleKey.Name,
+        TextColor3 = Theme.SubText,
+        TextSize = 11,
+        LayoutOrder = 1,
+        Parent = hint,
+    }, { corner(5), stroke(Theme.Stroke, 1, 0.2), padding(0, 0, 8, 8) })
+    new("TextLabel", {
+        Size = UDim2.fromOffset(0, 22),
+        AutomaticSize = Enum.AutomaticSize.X,
         BackgroundTransparency = 1,
-        ClipsDescendants = true,
-        Parent = content,
+        Font = Enum.Font.Gotham,
+        Text = "to toggle",
+        TextColor3 = Theme.Muted,
+        TextSize = 11,
+        LayoutOrder = 2,
+        Parent = hint,
     })
 
     table.insert(self._conns, UserInputService.InputBegan:Connect(function(input, processed)
@@ -1681,7 +1734,7 @@ function Prism:CreateWindow(opts)
     if useIntro then
         main.GroupTransparency = 1
         self.Border.BackgroundTransparency = 1
-        self.RootScale.Scale = 0.94
+        self.RootScale.Scale = self.BaseScale * 0.94
         root.Visible = false
 
         -- Empty diamond socket the logo flies into. The brand text stays
@@ -1689,7 +1742,7 @@ function Prism:CreateWindow(opts)
         self.Socket = new("Frame", {
             AnchorPoint = Vector2.new(0.5, 0.5),
             Position = UDim2.fromScale(0.5, 0.5),
-            Size = UDim2.fromOffset(26, 26),
+            Size = UDim2.fromOffset(27, 27),
             Rotation = 45,
             BackgroundTransparency = 1,
             Parent = self.LogoSlot,
@@ -1717,7 +1770,7 @@ function Window:_reveal(time)
     self.Root.Visible = true
     tween(self.Main, time, { GroupTransparency = 0 })
     tween(self.Border, time, { BackgroundTransparency = 0.45 })
-    tween(self.RootScale, time, { Scale = 1 }, Enum.EasingStyle.Back)
+    tween(self.RootScale, time, { Scale = self.BaseScale }, Enum.EasingStyle.Back)
 end
 
 function Window:_revealBrand()
@@ -1734,79 +1787,85 @@ end
 function Window:SetVisible(visible)
     self.Visible = visible
     if visible then
-        self.RootScale.Scale = 0.96
+        self.RootScale.Scale = self.BaseScale * 0.96
         self:_reveal(0.3)
     else
         tween(self.Main, 0.25, { GroupTransparency = 1 })
         tween(self.Border, 0.25, { BackgroundTransparency = 1 })
-        tween(self.RootScale, 0.25, { Scale = 0.96 }).Completed:Connect(function()
+        tween(self.RootScale, 0.25, { Scale = self.BaseScale * 0.96 }).Completed:Connect(function()
             if not self.Visible then self.Root.Visible = false end
         end)
     end
+end
+
+function Window:SetToggleKey(key)
+    self.ToggleKey = key
+    self.KeyHint.Text = key.Name
 end
 
 function Window:Tab(opts)
     opts = opts or {}
     local tab = setmetatable({ Window = self, Name = opts.Name or "Tab" }, Tab)
 
+    -- Pill that sizes to its text, with an underline that grows when active.
     local button = new("TextButton", {
-        Size = UDim2.new(1, 0, 0, 34),
+        Size = UDim2.fromOffset(0, 32),
+        AutomaticSize = Enum.AutomaticSize.X,
         BackgroundColor3 = Theme.Element,
         BackgroundTransparency = 1,
         AutoButtonColor = false,
-        Text = "",
-        LayoutOrder = #self.Tabs + 1,
-        Parent = self.TabList,
-    }, { corner(7) })
-    local indicator = new("Frame", {
-        AnchorPoint = Vector2.new(0, 0.5),
-        Position = UDim2.new(0, 0, 0.5, 0),
-        Size = UDim2.fromOffset(3, 0),
-        BackgroundColor3 = Color3.new(1, 1, 1),
-        BorderSizePixel = 0,
-        Parent = button,
-    }, { corner("full") })
-    spectralGradient(indicator, 0).Rotation = 90
-    local label = new("TextLabel", {
-        Position = UDim2.fromOffset(16, 0),
-        Size = UDim2.new(1, -20, 1, 0),
-        BackgroundTransparency = 1,
         Font = Enum.Font.GothamMedium,
         Text = tab.Name,
         TextColor3 = Theme.SubText,
         TextSize = 13,
-        TextXAlignment = Enum.TextXAlignment.Left,
+        LayoutOrder = #self.Tabs + 1,
+        Parent = self.TabList,
+    }, { corner(8), padding(0, 0, 16, 16) })
+    local buttonStroke = stroke(Theme.Stroke, 1, 1)
+    buttonStroke.Parent = button
+    local underline = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.new(0.5, 0, 1, 0),
+        Size = UDim2.new(0, 0, 0, 2),
+        BackgroundColor3 = WHITE,
+        BorderSizePixel = 0,
         Parent = button,
-    })
+    }, { corner("full") })
+    spectralGradient(underline, 0).Rotation = 0
 
     local page = new("ScrollingFrame", {
         Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        ScrollBarThickness = 2,
+        ScrollBarThickness = 3,
         ScrollBarImageColor3 = Theme.Accent,
         CanvasSize = UDim2.new(),
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         Visible = false,
         Parent = self.Pages,
-    }, { padding(14, 14, 14, 14) })
+    }, { padding(16, 16, 16, 16) })
 
-    local function column(x)
+    local function column(x, w)
         return new("Frame", {
             Position = UDim2.new(x, x == 0 and 0 or 6, 0, 0),
-            Size = UDim2.new(0.5, -6, 0, 0),
+            Size = UDim2.new(w, w == 1 and 0 or -6, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
             BackgroundTransparency = 1,
             Parent = page,
         }, { new("UIListLayout", { Padding = UDim.new(0, 12), SortOrder = Enum.SortOrder.LayoutOrder }) })
     end
-    tab.Left, tab.Right = column(0), column(0.5)
+    if self.Columns == 2 then
+        tab.Left, tab.Right = column(0, 0.5), column(0.5, 0.5)
+    else
+        tab.Left = column(0, 1)
+        tab.Right = tab.Left
+    end
     tab.Page, tab.Button = page, button
 
     function tab:_setActive(active)
-        tween(button, 0.25, { BackgroundTransparency = active and 0 or 1 })
-        tween(label, 0.25, { TextColor3 = active and Theme.Text or Theme.SubText, Position = UDim2.fromOffset(active and 20 or 16, 0) })
-        tween(indicator, 0.3, { Size = UDim2.fromOffset(3, active and 16 or 0) }, Enum.EasingStyle.Back)
+        tween(button, 0.25, { BackgroundTransparency = active and 0 or 1, TextColor3 = active and Theme.Text or Theme.SubText })
+        tween(buttonStroke, 0.25, { Transparency = active and 0.3 or 1 })
+        tween(underline, 0.35, { Size = UDim2.new(active and 0.6 or 0, 0, 0, 2) }, Enum.EasingStyle.Back)
         page.Visible = active
         if active then
             page.Position = UDim2.fromOffset(0, 10)
@@ -1815,10 +1874,10 @@ function Window:Tab(opts)
     end
 
     button.MouseEnter:Connect(function()
-        if self.ActiveTab ~= tab then tween(label, 0.2, { TextColor3 = Theme.Text }) end
+        if self.ActiveTab ~= tab then tween(button, 0.2, { TextColor3 = Theme.Text }) end
     end)
     button.MouseLeave:Connect(function()
-        if self.ActiveTab ~= tab then tween(label, 0.2, { TextColor3 = Theme.SubText }) end
+        if self.ActiveTab ~= tab then tween(button, 0.2, { TextColor3 = Theme.SubText }) end
     end)
     button.MouseButton1Click:Connect(function() self:SelectTab(tab) end)
 
@@ -1831,7 +1890,6 @@ function Window:SelectTab(tab)
     if self.ActiveTab == tab then return end
     if self.ActiveTab then self.ActiveTab:_setActive(false) end
     self.ActiveTab = tab
-    self.PageTitle.Text = tab.Name
     tab:_setActive(true)
 end
 
@@ -1868,7 +1926,7 @@ end
 function Window:Destroy()
     tween(self.Main, 0.25, { GroupTransparency = 1 })
     tween(self.Border, 0.25, { BackgroundTransparency = 1 })
-    tween(self.RootScale, 0.25, { Scale = 0.9 }).Completed:Wait()
+    tween(self.RootScale, 0.25, { Scale = self.BaseScale * 0.9 }).Completed:Wait()
     for _, c in ipairs(self._conns) do c:Disconnect() end
     self.Gui:Destroy()
     local blur = Lighting:FindFirstChild("PrismBlur")
