@@ -2100,11 +2100,25 @@ function Window:Tab(opts)
         BorderSizePixel = 0,
         ScrollBarThickness = 2,
         ScrollBarImageColor3 = Theme.Muted,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
         CanvasSize = UDim2.new(),
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         Visible = false,
         Parent = self.Pages,
-    }, { padding(18, 18, 18, 18) })
+    })
+
+    -- Margins come from this frame's position and size, not a UIPadding on
+    -- the ScrollingFrame: Roblox ignored that padding's right side and rows
+    -- ran 18px past the window edge. The bottom padding here is inside the
+    -- frame, so the canvas still leaves room below the last section.
+    local MARGIN = 18
+    local content = new("Frame", {
+        Position = UDim2.fromOffset(MARGIN, MARGIN),
+        Size = UDim2.new(1, -MARGIN * 2, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Parent = page,
+    }, { padding(0, MARGIN, 0, 0) })
 
     local function column(x, w)
         return new("Frame", {
@@ -2112,7 +2126,7 @@ function Window:Tab(opts)
             Size = UDim2.new(w, w == 1 and 0 or -6, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
             BackgroundTransparency = 1,
-            Parent = page,
+            Parent = content,
         }, { new("UIListLayout", { Padding = UDim.new(0, 20), SortOrder = Enum.SortOrder.LayoutOrder }) })
     end
     if self.Columns == 2 then
