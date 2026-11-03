@@ -95,7 +95,7 @@ local Theme = {
 
     -- Faint white hairline used for every outline.
     Outline             = Color3.new(1, 1, 1),
-    OutlineTransparency = 0.93,
+    OutlineTransparency = 0.95,
 
     Text    = Color3.fromRGB(242, 242, 245),
     SubText = Color3.fromRGB(161, 161, 170),
@@ -1596,6 +1596,8 @@ local NOTIFY_TYPES = {
     Success = { Icon = "check-circle",   Color = function() return Theme.Success end },
     Warning = { Icon = "alert-triangle", Color = function() return Theme.Warning end },
     Error   = { Icon = "x-circle",       Color = function() return Theme.Error end },
+    -- Spins and stays until updated or closed: handle:Update{ Type = "Success" }.
+    Loading = { Icon = "loader",         Color = function() return Theme.Accent end, Spin = true, Persistent = true },
 }
 
 -- Corner the stack sits in: "BottomRight" (default), "TopRight",
@@ -1630,7 +1632,7 @@ local function ensureNotifyHolder()
     notifyHolder = new("Frame", {
         AnchorPoint = Vector2.new(1, 1),
         Position = UDim2.new(1, -20, 1, -20),
-        Size = UDim2.new(0, 260, 1, -40),
+        Size = UDim2.new(0, 280, 1, -40),
         BackgroundTransparency = 1,
         Parent = notifyGui,
     }, {
@@ -1649,7 +1651,13 @@ local notifyOrder = 0
 -- At most this many toasts on screen; the rest wait behind a "+N more" pill
 -- and slide in as earlier ones close. Click the pill to drop the queue.
 Prism.MaxNotifications = 4
+-- Do not disturb: toasts are skipped but still land in the history.
+Prism.NotifyMuted = false
+-- Every notification sent, newest last. See Prism:GetNotifications().
+Prism.NotifyHistory = {}
+local NOTIFY_HISTORY_MAX = 50
 local activeToasts, queued, morePill = 0, {}, nil
+local liveToasts = {} -- [handle] = merge key, while on screen
 
 local function updateMorePill()
     if not (notifyHolder and notifyHolder.Parent) then return end
@@ -1669,6 +1677,7 @@ local function updateMorePill()
         morePill.MouseEnter:Connect(function() tween(morePill, 0.12, { BackgroundColor3 = Theme.Element }) end)
         morePill.MouseLeave:Connect(function() tween(morePill, 0.12, { BackgroundColor3 = Theme.Surface }) end)
         morePill.MouseButton1Click:Connect(function()
+            for _, h in ipairs(queued) do h._dropped = true end
             table.clear(queued)
             updateMorePill()
         end)
@@ -1677,27 +1686,105 @@ local function updateMorePill()
     morePill.Text = "+" .. #queued .. " more  ·  click to clear"
 end
 
+local function notifyKey(o)
+    return tostring(o.Title) .. "\0" .. tostring(o.Content) .. "\0" .. tostring(o.Type)
+end
+
+-- Handle returned by Prism:Notify. Works before the toast is on screen
+-- (queued, or waiting for the intro): changes are kept and applied on show.
+--  :Update{ Title, Content, Type, Icon, Duration, Progress }
+--  :SetTitle(text)  :SetContent(text)  :SetProgress(0..1 | false)  :Close()
+local Toast = {}
+Toast.__index = Toast
+
+function Toast:Update(changes)
+    for k, v in pairs(changes) do self._opts[k] = v end
+    if self._apply then self._apply(changes) end
+    return self
+end
+function Toast:SetTitle(text) return self:Update({ Title = text }) end
+function Toast:SetContent(text) return self:Update({ Content = text }) end
+function Toast:SetProgress(p) return self:Update({ Progress = p }) end
+function Toast:Close()
+    if self._close then
+        task.spawn(self._close)
+        return
+    end
+    self._dropped = true
+    local i = table.find(queued, self)
+    if i then
+        table.remove(queued, i)
+        updateMorePill()
+    end
+end
+
+local showToast
+
+--  Prism:Notify{ Title, Content, Type, Icon, Duration, Buttons, Progress,
+--                Callback, OnClose, Merge, Force }  ->  handle
+--  Type: "Info" | "Success" | "Warning" | "Error" | "Loading".
+--  Duration: seconds; 0 or math.huge stays until closed. Loading toasts stay
+--  by default. Buttons: { { Name, Callback, Primary, KeepOpen }, ... }.
+--  A repeat of a toast still on screen bumps its "x2" count instead of
+--  stacking (Merge = false to opt out). Hovering pauses the timer.
 function Prism:Notify(opts)
-    opts = opts or {}
+    opts = table.clone(opts or {})
+    if opts.Merge ~= false then
+        local key = notifyKey(opts)
+        for live, k in pairs(liveToasts) do
+            if k == key and live._bump then
+                live._bump()
+                return live
+            end
+        end
+    end
+    local handle = setmetatable({ _opts = opts }, Toast)
+    local history = Prism.NotifyHistory
+    table.insert(history, {
+        Title = opts.Title or "Prism",
+        Content = opts.Content or "",
+        Type = opts.Type or "Info",
+        Time = os.time(),
+    })
+    if #history > NOTIFY_HISTORY_MAX then table.remove(history, 1) end
+    if Prism.NotifyMuted and not opts.Force then return handle end
     if Prism._introBusy then
         task.spawn(function()
             repeat task.wait(0.1) until not Prism._introBusy
-            Prism:Notify(opts)
+            if not handle._dropped then showToast(handle) end
         end)
-        return
+        return handle
     end
+    showToast(handle)
+    return handle
+end
+
+-- Copy of the history, newest last.
+function Prism:GetNotifications()
+    return table.clone(Prism.NotifyHistory)
+end
+
+-- Closes every toast on screen and drops the queue.
+function Prism:ClearNotifications()
+    for _, h in ipairs(queued) do h._dropped = true end
+    table.clear(queued)
+    updateMorePill()
+    for h in pairs(liveToasts) do h:Close() end
+end
+
+showToast = function(handle)
+    local opts = handle._opts
     local holder = ensureNotifyHolder()
     if activeToasts >= Prism.MaxNotifications then
-        table.insert(queued, opts)
+        table.insert(queued, handle)
         updateMorePill()
         return
     end
     activeToasts += 1
     local kind = NOTIFY_TYPES[opts.Type or "Info"] or NOTIFY_TYPES.Info
     local color = kind.Color()
-    local duration = opts.Duration or 4
     local fromLeft = string.find(Prism.NotifyPosition, "Left") ~= nil
-    local OFFSCREEN = UDim2.fromOffset(fromLeft and -350 or 350, 0)
+    local OFFSCREEN = UDim2.fromOffset(fromLeft and -360 or 360, 0)
     notifyOrder += 1
     playSound("Notify", kind == NOTIFY_TYPES.Error and 0.8 or 1)
 
@@ -1715,6 +1802,7 @@ function Prism:Notify(opts)
         BackgroundTransparency = 1,
         Parent = wrapper,
     })
+    local pop = new("UIScale", { Scale = 0.94, Parent = mover })
     dropShadow(mover, "Popup")
 
     local card = new("TextButton", {
@@ -1726,68 +1814,142 @@ function Prism:Notify(opts)
         BorderSizePixel = 0,
         ClipsDescendants = true,
         Parent = mover,
-    }, { corner(6), outline(), padding(9, 11, 10, 10) })
+    }, { corner(7), outline(), padding(10, 12, 14, 10) })
 
-    -- Soft wash of the type colour from the left edge. Lives in the mover,
-    -- not the auto-sized card, so it can't feed back into the card's height.
-    new("Frame", {
-        Size = UDim2.new(0, 140, 1, 0),
+    -- Faint wash of the type colour from the left, plus a slim indicator
+    -- pill. Both live in the mover, not the auto-sized card, so they can't
+    -- feed back into the card's height.
+    local wash = new("Frame", {
+        Size = UDim2.new(0, 120, 1, 0),
         BackgroundColor3 = color,
-        BackgroundTransparency = 0.88,
+        BackgroundTransparency = 0.93,
         BorderSizePixel = 0,
         ZIndex = 2,
         Parent = mover,
     }, {
-        corner(6),
+        corner(7),
         new("UIGradient", { Transparency = NumberSequence.new(0, 1) }),
     })
+    local bar = new("Frame", {
+        Position = UDim2.new(0, 4, 0, 10),
+        Size = UDim2.new(0, 2, 1, -20),
+        BackgroundColor3 = color,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Parent = mover,
+    }, { corner("full") })
 
     local badge = new("Frame", {
-        Size = UDim2.fromOffset(24, 24),
+        Size = UDim2.fromOffset(26, 26),
         BackgroundColor3 = color,
-        BackgroundTransparency = 0.85,
+        BackgroundTransparency = 0.86,
         BorderSizePixel = 0,
         Parent = card,
-    }, { corner(5) })
-    icon(opts.Icon or kind.Icon, 13, color, {
+    }, { corner("full") })
+    local iconImg = icon(opts.Icon or kind.Icon, 14, color, {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.fromScale(0.5, 0.5),
         Parent = badge,
     })
 
-    new("Frame", {
-        Position = UDim2.fromOffset(34, 0),
-        Size = UDim2.new(1, -34, 0, 0),
+    local text = new("Frame", {
+        Position = UDim2.fromOffset(36, 0),
+        Size = UDim2.new(1, -56, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
         Parent = card,
-    }, {
-        new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }),
-        new("TextLabel", {
-            Size = UDim2.new(1, 0, 0, 14),
-            BackgroundTransparency = 1,
-            FontFace = Fonts.SemiBold,
-            Text = opts.Title or "Prism",
-            TextColor3 = Theme.Text,
-            TextSize = 12,
-            TextTruncate = Enum.TextTruncate.AtEnd,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            LayoutOrder = 1,
-        }),
-        new("TextLabel", {
-            Size = UDim2.new(1, 0, 0, 0),
-            AutomaticSize = Enum.AutomaticSize.Y,
-            BackgroundTransparency = 1,
-            FontFace = Fonts.Regular,
-            Text = opts.Content or "",
-            TextColor3 = Theme.SubText,
-            TextSize = 11,
-            TextWrapped = true,
-            RichText = true,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            LayoutOrder = 2,
-        }),
+    }, { new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local titleLabel = new("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 14),
+        BackgroundTransparency = 1,
+        FontFace = Fonts.SemiBold,
+        Text = "",
+        RichText = true,
+        TextColor3 = Theme.Text,
+        TextSize = 12,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        LayoutOrder = 1,
+        Parent = text,
     })
+    local contentLabel = new("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        FontFace = Fonts.Regular,
+        Text = opts.Content or "",
+        Visible = (opts.Content or "") ~= "",
+        TextColor3 = Theme.SubText,
+        TextSize = 11,
+        TextWrapped = true,
+        RichText = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        LayoutOrder = 2,
+        Parent = text,
+    })
+
+    local closed = false
+    local close -- defined below; buttons need it
+
+    -- Action buttons
+    if type(opts.Buttons) == "table" and #opts.Buttons > 0 then
+        local row = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 22),
+            BackgroundTransparency = 1,
+            LayoutOrder = 3,
+            Parent = text,
+        }, {
+            new("UIListLayout", {
+                FillDirection = Enum.FillDirection.Horizontal,
+                Padding = UDim.new(0, 6),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            }),
+            padding(4, 0, 0, 0),
+        })
+        for i, b in ipairs(opts.Buttons) do
+            local primary = b.Primary or (i == 1 and #opts.Buttons == 1)
+            local btn = new("TextButton", {
+                Size = UDim2.fromOffset(0, 20),
+                AutomaticSize = Enum.AutomaticSize.X,
+                BackgroundColor3 = primary and color or Theme.Element,
+                BackgroundTransparency = primary and 0.25 or 0,
+                AutoButtonColor = false,
+                FontFace = Fonts.Medium,
+                Text = b.Name or "OK",
+                TextColor3 = primary and WHITE or Theme.SubText,
+                TextSize = 11,
+                LayoutOrder = i,
+                Parent = row,
+            }, { corner(5), padding(0, 0, 10, 10) })
+            if not primary then outline().Parent = btn end
+            local rest = btn.BackgroundTransparency
+            btn.MouseEnter:Connect(function()
+                tween(btn, 0.12, primary and { BackgroundTransparency = 0 } or { BackgroundColor3 = Theme.ElementHover, TextColor3 = Theme.Text })
+            end)
+            btn.MouseLeave:Connect(function()
+                tween(btn, 0.12, primary and { BackgroundTransparency = rest } or { BackgroundColor3 = Theme.Element, TextColor3 = Theme.SubText })
+            end)
+            btn.MouseButton1Click:Connect(function()
+                playSound("Click")
+                safeCall(b.Callback, handle)
+                if not b.KeepOpen then task.spawn(close) end
+            end)
+        end
+    end
+
+    -- Close button, faint until the card is hovered.
+    local x = new("ImageButton", {
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, 0, 0, 0),
+        Size = UDim2.fromOffset(14, 14),
+        BackgroundTransparency = 1,
+        Image = resolveIcon("x") or "",
+        ImageColor3 = Theme.SubText,
+        ImageTransparency = 0.7,
+        Parent = card,
+    })
+    x.MouseEnter:Connect(function() tween(x, 0.1, { ImageTransparency = 0, ImageColor3 = Theme.Text }) end)
+    x.MouseLeave:Connect(function() tween(x, 0.1, { ImageTransparency = 0.3, ImageColor3 = Theme.SubText }) end)
 
     local timer = new("Frame", {
         AnchorPoint = Vector2.new(0, 1),
@@ -1806,26 +1968,137 @@ function Prism:Notify(opts)
     card:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
     fit()
 
-    tween(mover, 0.45, { Position = UDim2.fromOffset(0, 0) })
-    local timerTween = tween(timer, duration + 0.45, { Size = UDim2.new(0, 0, 0, 2) }, Enum.EasingStyle.Linear)
+    -- State -----------------------------------------------------------------
+    local count, hovering = 1, false
+    local total, remaining, persistent = 1, 1, false
+    local function setDuration(d)
+        if d == nil then
+            d = kind.Persistent and 0 or (opts.Buttons and 8 or 4)
+        end
+        persistent = not d or d <= 0 or d == math.huge
+        total = persistent and 1 or d
+        remaining = total
+    end
+    setDuration(opts.Duration)
 
-    local closed = false
-    local function close()
+    local function renderTitle()
+        local t = opts.Title or "Prism"
+        if count > 1 then
+            t ..= string.format('  <font color="#%s">×%d</font>', Theme.Muted:ToHex(), count)
+        end
+        titleLabel.Text = t
+    end
+    renderTitle()
+
+    local function applyKind()
+        kind = NOTIFY_TYPES[opts.Type or "Info"] or NOTIFY_TYPES.Info
+        color = kind.Color()
+        iconImg.Image = resolveIcon(opts.Icon or kind.Icon) or ""
+        iconImg.Rotation = 0
+        for _, f in ipairs({ badge, wash, bar, timer }) do
+            tween(f, 0.2, { BackgroundColor3 = color })
+        end
+        tween(iconImg, 0.2, { ImageColor3 = color })
+    end
+
+    local function showProgress(p)
+        p = math.clamp(p, 0, 1)
+        timer.Visible = true
+        tween(timer, 0.2, { Size = UDim2.new(p, -16 * p, 0, 2) })
+    end
+    if type(opts.Progress) == "number" then showProgress(opts.Progress) end
+
+    local key = notifyKey(opts)
+    liveToasts[handle] = key
+
+    handle._apply = function(c)
+        if c.Title ~= nil then renderTitle() end
+        if c.Content ~= nil then
+            contentLabel.Text = c.Content
+            contentLabel.Visible = c.Content ~= ""
+        end
+        if c.Type ~= nil or c.Icon ~= nil then
+            applyKind()
+            if c.Duration == nil then setDuration(nil) end
+        end
+        if c.Duration ~= nil then setDuration(c.Duration) end
+        if c.Progress ~= nil then
+            if type(c.Progress) == "number" then showProgress(c.Progress) end
+        end
+        -- Text changed: stop merging repeats of the old text into this one.
+        liveToasts[handle] = nil
+    end
+
+    handle._bump = function()
+        count += 1
+        renderTitle()
+        remaining = total
+        playSound("Notify", 1.1)
+        pop.Scale = 1.04
+        tween(pop, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+    end
+
+    close = function()
         if closed then return end
         closed = true
-        timerTween:Cancel()
+        tickers[handle] = nil
+        liveToasts[handle] = nil
+        handle._apply, handle._bump, handle._close = nil, nil, nil
+        safeCall(opts.OnClose, handle)
         tween(mover, 0.35, { Position = OFFSCREEN }, Enum.EasingStyle.Quint, Enum.EasingDirection.In).Completed:Wait()
         tween(wrapper, 0.25, { Size = UDim2.new(1, 0, 0, 0) }).Completed:Wait()
         wrapper:Destroy()
         activeToasts -= 1
-        local nextOpts = table.remove(queued, 1)
+        local nextHandle = table.remove(queued, 1)
         updateMorePill()
-        if nextOpts then Prism:Notify(nextOpts) end
+        if nextHandle then showToast(nextHandle) end
     end
-    card.MouseButton1Click:Connect(function() task.spawn(close) end)
-    card.MouseEnter:Connect(function() tween(card, 0.15, { BackgroundColor3 = Theme.Element }) end)
-    card.MouseLeave:Connect(function() tween(card, 0.15, { BackgroundColor3 = Theme.Surface }) end)
-    task.delay(duration + 0.45, close)
+    handle._close = close
+
+    -- Countdown (paused on hover), spinner, and the timer bar.
+    local last = os.clock()
+    tickers[handle] = function(t)
+        local dt = t - last
+        last = t
+        if closed or not mover.Parent then
+            tickers[handle] = nil
+            return
+        end
+        if kind.Spin and not Prism.ReduceMotion then iconImg.Rotation = (t * 300) % 360 end
+        if type(opts.Progress) == "number" then
+            if persistent then return end
+        elseif persistent then
+            timer.Visible = false
+            return
+        else
+            timer.Visible = true
+        end
+        if not hovering then remaining -= dt end
+        if type(opts.Progress) ~= "number" then
+            local f = math.clamp(remaining / total, 0, 1)
+            timer.Size = UDim2.new(f, -16 * f, 0, 2)
+        end
+        if remaining <= 0 then task.spawn(close) end
+    end
+
+    tween(mover, 0.45, { Position = UDim2.fromOffset(0, 0) })
+    tween(pop, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
+
+    x.MouseButton1Click:Connect(function() task.spawn(close) end)
+    card.MouseButton1Click:Connect(function()
+        safeCall(opts.Callback, handle)
+        task.spawn(close)
+    end)
+    card.MouseEnter:Connect(function()
+        hovering = true
+        tween(card, 0.15, { BackgroundColor3 = Theme.Element })
+        tween(x, 0.15, { ImageTransparency = 0.3 })
+    end)
+    card.MouseLeave:Connect(function()
+        hovering = false
+        tween(card, 0.15, { BackgroundColor3 = Theme.Surface })
+        tween(x, 0.15, { ImageTransparency = 0.7 })
+    end)
 end
 
 -- ============================================================================
@@ -2234,7 +2507,7 @@ local function addShine(fill)
         new("UIGradient", {
             Transparency = NumberSequence.new({
                 NumberSequenceKeypoint.new(0, 1),
-                NumberSequenceKeypoint.new(0.5, 0.55),
+                NumberSequenceKeypoint.new(0.5, 0.78),
                 NumberSequenceKeypoint.new(1, 1),
             }),
         }),
@@ -3043,7 +3316,11 @@ function Section:Toggle(opts)
             listening = false
             window:_releaseListener(toggle)
             local clear = input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace
+            local previous = toggle.Key
             toggle:SetKey(not clear and input.KeyCode or nil)
+            if not clear then
+                window:_warnKeyConflict(toggle, input.KeyCode, function() toggle:SetKey(previous) end)
+            end
             return
         end
         if processed or not toggle.Key or input.KeyCode ~= toggle.Key or toggle.Locked then return end
@@ -3231,6 +3508,13 @@ function Section:Slider(opts)
         if changed and not silent then safeCall(opts.Callback, value) end
     end
     function slider:Get() return self.Value end
+    -- Change the range at runtime; the value is clamped into it.
+    function slider:SetRange(newMin, newMax)
+        min, max = newMin or min, newMax or max
+        self:Set(self.Value, true)
+    end
+    function slider:SetMin(v) self:SetRange(v, nil) end
+    function slider:SetMax(v) self:SetRange(nil, v) end
 
     local dragging = false
     local function update(x)
@@ -3505,6 +3789,20 @@ function Section:Dropdown(opts)
         if self.Open then self:SetOpen(true) end
     end
     dropdown.SetValues = dropdown.Refresh
+    function dropdown:AddOption(option)
+        if table.find(self.Options, option) then return end
+        local list = table.clone(self.Options)
+        table.insert(list, option)
+        self:Refresh(list, true)
+    end
+    function dropdown:RemoveOption(option)
+        local list = table.clone(self.Options)
+        local i = table.find(list, option)
+        if i then
+            table.remove(list, i)
+            self:Refresh(list)
+        end
+    end
 
     searchBox:GetPropertyChangedSignal("Text"):Connect(function()
         local q = string.lower(searchBox.Text)
@@ -3519,10 +3817,26 @@ function Section:Dropdown(opts)
         dropdown:SetOpen(not dropdown.Open)
     end)
 
-    dropdown:Refresh(opts.Options or {})
+    -- Options may be a function: it's re-read every OptionsInterval seconds
+    -- (default 1) and the list refreshes when its result changes.
+    local optionSource = type(opts.Options) == "function" and opts.Options or nil
+    if optionSource then
+        local ok, list = pcall(optionSource)
+        dropdown:Refresh(ok and type(list) == "table" and list or {})
+    else
+        dropdown:Refresh(opts.Options or {})
+    end
     if opts.Default ~= nil then dropdown:Set(opts.Default, true) end
     registerFlag(opts.Flag, dropdown)
     self.Window:_depends(dropdown, opts)
+    if optionSource then
+        self.Window:_bind(dropdown, optionSource, {
+            Interval = opts.OptionsInterval or 1,
+            Apply = function(list)
+                if type(list) == "table" then dropdown:Refresh(list, true) end
+            end,
+        })
+    end
     return dropdown
 end
 
@@ -3758,7 +4072,12 @@ function Section:Keybind(opts)
             listening = false
             self.Window:_releaseListener(keybind)
             tween(keyStroke, 0.15, { Color = Theme.Outline, Transparency = Theme.OutlineTransparency })
-            keybind:Set(input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode or nil)
+            local previous = keybind.Value
+            local key = input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode or nil
+            keybind:Set(key)
+            if key then
+                self.Window:_warnKeyConflict(keybind, key, function() keybind:Set(previous) end)
+            end
             return
         end
         if not processed and keybind.Value and input.KeyCode == keybind.Value then
@@ -3767,6 +4086,9 @@ function Section:Keybind(opts)
     end))
 
     render()
+    keybind._isMenu = opts.Flag == "Prism_MenuKey"
+    keybind._changeField = "ChangedCallback"
+    table.insert(self.Window._keybinds, keybind)
     registerFlag(opts.Flag, keybind)
     self.Window:_depends(keybind, opts)
     return keybind
@@ -3841,11 +4163,13 @@ function Section:Stat(opts)
         Parent = holder,
     })
     self.Window:_indexElement(opts.Name, self, holder)
-    return {
+    local stat = {
         Frame = holder,
         Set = function(_, v) value.Text = tostring(v) end,
         SetColor = function(_, c) value.TextColor3 = c end,
     }
+    self.Window:_depends(stat, opts)
+    return stat
 end
 
 function Section:Paragraph(opts)
@@ -3885,7 +4209,7 @@ function Section:Paragraph(opts)
         LayoutOrder = 2,
         Parent = holder,
     })
-    return {
+    local paragraph = {
         Frame = holder,
         Set = function(_, t, c)
             if t then title.Text = t end
@@ -3894,6 +4218,8 @@ function Section:Paragraph(opts)
         SetTitle = function(_, t) title.Text = t end,
         SetContent = function(_, c) content.Text = c end,
     }
+    self.Window:_depends(paragraph, opts)
+    return paragraph
 end
 
 -- Thin line, optionally with a caption.
@@ -4050,6 +4376,7 @@ function Section:Progress(opts)
     end
     progress:Set(opts.Value or 0, opts.Text)
     self.Window:_indexElement(opts.Name, self, holder)
+    self.Window:_depends(progress, opts)
     return progress
 end
 
@@ -4114,7 +4441,7 @@ local function sectionCard(column, window)
         Position = UDim2.fromOffset(12, 0),
         Size = UDim2.new(1, -24, 0, 1),
         BackgroundColor3 = WHITE,
-        BackgroundTransparency = 0.82,
+        BackgroundTransparency = 0.94,
         BorderSizePixel = 0,
         ZIndex = 2,
         Parent = card,
@@ -4392,8 +4719,8 @@ local function makeDraggable(handle, target, conns)
     end))
 end
 
-local SHADOW_TRANSPARENCY = 0.35
-local UNDERGLOW_TRANSPARENCY = 0.88
+local SHADOW_TRANSPARENCY = 0.3
+local UNDERGLOW_TRANSPARENCY = 0.95
 local SIDEBAR, SIDEBAR_COMPACT, TOPBAR = 158, 52, 36
 
 -- Live FPS and ping, shared by the profile card and the watermark.
@@ -4423,6 +4750,8 @@ function Prism:CreateWindow(opts)
     self._conns = {}
     self._index = {}
     self._bindables = {}
+    self._keybinds = {} -- Keybind elements, for conflict checks
+    self._bindings = {} -- live data bindings, see Window:_bind
     self._unloadHooks = {}
     self._attached = {}
     self._deps = {}
@@ -4991,8 +5320,8 @@ function Prism:CreateWindow(opts)
         Parent = main,
     })
 
-    -- Glassy rim: a hairline around the window, brightest along the top
-    -- edge. Inset 1px because the CanvasGroup clips its own bounds.
+    -- Window rim: a hairline around the window, styled by SetBorderStyle.
+    -- Inset 1px because the CanvasGroup clips its own bounds.
     local rim = new("Frame", {
         Position = UDim2.fromOffset(1, 1),
         Size = UDim2.new(1, -2, 1, -2),
@@ -5000,17 +5329,10 @@ function Prism:CreateWindow(opts)
         ZIndex = 10,
         Parent = main,
     }, { corner(9) })
-    local rimStroke = stroke(WHITE, 1, 0)
-    rimStroke.Parent = rim
-    new("UIGradient", {
-        Rotation = 90,
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.75),
-            NumberSequenceKeypoint.new(0.2, 0.9),
-            NumberSequenceKeypoint.new(1, 0.93),
-        }),
-        Parent = rimStroke,
-    })
+    self._rimStroke = stroke(WHITE, 1, 0)
+    self._rimStroke.Parent = rim
+    self._rimGradient = new("UIGradient", { Rotation = 90, Parent = self._rimStroke })
+    self:SetBorderStyle(opts.BorderStyle or "Subtle")
 
     -- Resize grip, bottom-right. The window grows down and right; its top-left
     -- corner stays put.
@@ -5301,6 +5623,52 @@ end
 
 -- Window background opacity, 0..1. Lower values let the game show through
 -- (pair with SetBlur for a frosted look).
+-- Rim transparency top -> bottom for the static border styles.
+local BORDER_STYLES = {
+    Subtle = { 0.9, 0.93, 0.95 },
+    Glass  = { 0.8, 0.9, 0.93 },
+}
+
+--  SetBorderStyle("Subtle" | "Glass" | "Accent" | "None")
+--  Accent: two soft accent lights orbit the rim; still under ReduceMotion.
+function Window:SetBorderStyle(style)
+    local rimStroke, g = self._rimStroke, self._rimGradient
+    if not (rimStroke and rimStroke.Parent) then return end
+    self.BorderStyle = style
+    tickers[g] = nil
+    themeListeners[g] = nil
+    rimStroke.Transparency = style == "None" and 1 or 0
+    if style == "Accent" then
+        g.Color = accentSequence()
+        g.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.9),
+            NumberSequenceKeypoint.new(0.4, 0.9),
+            NumberSequenceKeypoint.new(0.5, 0.3),
+            NumberSequenceKeypoint.new(0.6, 0.9),
+            NumberSequenceKeypoint.new(1, 0.9),
+        })
+        tickers[g] = function(t)
+            if not g.Parent then
+                tickers[g] = nil
+                return
+            end
+            if not Prism.ReduceMotion then g.Rotation = (t * 36) % 360 end
+        end
+        onThemeChanged(g, function()
+            if alive(g) then g.Color = accentSequence() else themeListeners[g] = nil end
+        end)
+    else
+        local k = BORDER_STYLES[style] or BORDER_STYLES.Subtle
+        g.Color = ColorSequence.new(WHITE)
+        g.Rotation = 90
+        g.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, k[1]),
+            NumberSequenceKeypoint.new(0.2, k[2]),
+            NumberSequenceKeypoint.new(1, k[3]),
+        })
+    end
+end
+
 function Window:SetOpacity(alpha)
     self.Main.BackgroundTransparency = 1 - alpha
     self._sidebar.BackgroundTransparency = (1 - alpha) * 0.6
@@ -6262,6 +6630,7 @@ function Window:SaveConfig(name)
     if not canUseFiles() then return false end
     ensureFolder(self.ConfigFolder)
     writefile(self.ConfigFolder .. "/" .. name .. ".json", HttpService:JSONEncode(serializeFlags()))
+    self.ActiveConfig = name
     return true
 end
 
@@ -6272,6 +6641,8 @@ function Window:LoadConfig(name)
     local ok, data = pcall(HttpService.JSONDecode, HttpService, readfile(path))
     if not ok then return false end
     applyFlags(data)
+    self.ActiveConfig = name
+    task.defer(function() self:_reportKeyConflicts() end)
     return true
 end
 
@@ -6290,6 +6661,44 @@ function Window:DeleteConfig(name)
     local path = self.ConfigFolder .. "/" .. name .. ".json"
     if delfile and isfile and isfile(path) then delfile(path) return true end
     return false
+end
+
+-- Profiles: a config bound to this place or this account loads on start,
+-- ahead of the plain autoload. Place wins over account. Stored in
+-- <ConfigFolder>/profiles.json as { Place = { [placeId] = name },
+-- Account = { [userId] = name } }.
+local PROFILE_SCOPES = { Place = true, Account = true }
+
+local function profileId(scope)
+    return scope == "Place" and tostring(game.PlaceId) or tostring(LocalPlayer.UserId)
+end
+
+function Window:_readProfiles()
+    local data = { Place = {}, Account = {} }
+    local path = self.ConfigFolder .. "/profiles.json"
+    if canUseFiles() and isfile(path) then
+        local ok, saved = pcall(HttpService.JSONDecode, HttpService, readfile(path))
+        if ok and typeof(saved) == "table" then
+            data.Place = typeof(saved.Place) == "table" and saved.Place or {}
+            data.Account = typeof(saved.Account) == "table" and saved.Account or {}
+        end
+    end
+    return data
+end
+
+--  Window:SetProfile("Place" | "Account", name)  -- name nil unbinds
+function Window:SetProfile(scope, name)
+    if not (canUseFiles() and PROFILE_SCOPES[scope]) then return false end
+    local data = self:_readProfiles()
+    data[scope][profileId(scope)] = name
+    ensureFolder(self.ConfigFolder)
+    writefile(self.ConfigFolder .. "/profiles.json", HttpService:JSONEncode(data))
+    return true
+end
+
+function Window:GetProfile(scope)
+    if not PROFILE_SCOPES[scope] then return nil end
+    return self:_readProfiles()[scope][profileId(scope)]
 end
 
 function Window:ListConfigs()
@@ -6378,6 +6787,14 @@ function Window:SettingsTab(opts)
         Description = "Frosted-glass look while the menu is open.",
         Flag = "Prism_Blur",
         Callback = function(on) self:SetBlur(on) end,
+    })
+    look:Segmented({
+        Name = "Window border",
+        Description = "Accent: two soft lights orbit the window edge.",
+        Options = { "Subtle", "Glass", "Accent", "None" },
+        Default = self.BorderStyle or "Subtle",
+        Flag = "Prism_Border",
+        Callback = function(style) self:SetBorderStyle(style) end,
     })
 
     -- Behaviour -------------------------------------------------------------
@@ -6475,19 +6892,50 @@ function Window:SettingsTab(opts)
         Name = "Test notification",
         Icon = "bell",
         Callback = function()
-            Prism:Notify({ Title = "Looking good", Content = "This is what notifications look like.", Type = "Success" })
+            -- Loading toast with live progress that turns into a success.
+            local n = Prism:Notify({ Title = "Working", Content = "Watch this one update itself.", Type = "Loading", Progress = 0 })
+            task.spawn(function()
+                for i = 1, 10 do
+                    task.wait(0.15)
+                    n:SetProgress(i / 10)
+                end
+                n:Update({ Title = "Looking good", Content = "Hover to pause. Click to dismiss.", Type = "Success", Progress = false })
+            end)
         end,
+    })
+    overlay:Toggle({
+        Name = "Do not disturb",
+        HideFromList = true,
+        Description = "Hides notifications. They still go into the history.",
+        Flag = "Prism_DND",
+        Callback = function(on) Prism.NotifyMuted = on end,
+    })
+    overlay:Button({
+        Name = "Clear notifications",
+        Icon = "trash-2",
+        Callback = function() Prism:ClearNotifications() end,
     })
 
     -- Configs ---------------------------------------------------------------
     local cfg = tab:Section({ Name = "Configs", Icon = "save", Side = "Right" })
     cfg:Stat({ Name = "Saving to", Value = self.ConfigFolder, Icon = "folder" })
-    local nameBox = cfg:Textbox({ Name = "Config name", Placeholder = "default", Default = "default" })
+    local syncProfiles = function() end -- set once the profile toggles exist
+    local nameBox = cfg:Textbox({
+        Name = "Config name",
+        Placeholder = "default",
+        Default = "default",
+        Callback = function() syncProfiles() end,
+    })
     local list = cfg:Dropdown({
         Name = "Saved configs",
         Options = self:ListConfigs(),
         Placeholder = "None saved",
-        Callback = function(v) if v then nameBox:Set(v, true) end end,
+        Callback = function(v)
+            if v then
+                nameBox:Set(v, true)
+                syncProfiles()
+            end
+        end,
     })
     local function current()
         return (nameBox.Value ~= "" and nameBox.Value) or "default"
@@ -6599,22 +7047,120 @@ function Window:SettingsTab(opts)
         end,
     })
 
+    -- Autoload and profiles. The toggles show whether the config named in
+    -- the box is the one that loads on start.
     local autoPath = self.ConfigFolder .. "/autoload.txt"
-    cfg:Toggle({
+    local function autoloadName()
+        return canUseFiles() and isfile(autoPath) and readfile(autoPath) or nil
+    end
+    local autoToggle = cfg:Toggle({
         Name = "Autoload this config",
         HideFromList = true,
         Description = "Loads it automatically next time.",
-        Default = canUseFiles() and isfile(autoPath) or false,
         Callback = function(on)
             if not canUseFiles() then return end
             ensureFolder(self.ConfigFolder)
             if on then
                 writefile(autoPath, current())
-            elseif delfile and isfile(autoPath) then
+            elseif delfile and isfile(autoPath) and readfile(autoPath) == current() then
                 delfile(autoPath)
             end
         end,
     })
+    local function profileToggle(scope, name, description)
+        return cfg:Toggle({
+            Name = name,
+            HideFromList = true,
+            Description = description,
+            Callback = function(on)
+                local config = current()
+                if on then
+                    self:SetProfile(scope, config)
+                elseif self:GetProfile(scope) == config then
+                    self:SetProfile(scope, nil)
+                end
+            end,
+        })
+    end
+    local placeToggle = profileToggle("Place", "Load on this place",
+        "Loads this config whenever you join this place. Beats every other autoload.")
+    local accountToggle = profileToggle("Account", "Load on this account",
+        "Loads this config whenever " .. LocalPlayer.Name .. " runs the script, in any place of this game.")
+    syncProfiles = function()
+        local name = current()
+        autoToggle:Set(autoloadName() == name, true)
+        placeToggle:Set(self:GetProfile("Place") == name, true)
+        accountToggle:Set(self:GetProfile("Account") == name, true)
+    end
+
+    -- Auto-save. Only writes over a config loaded or saved this session, so
+    -- switching it on can't overwrite a saved config with fresh defaults.
+    local autoSavePath = self.ConfigFolder .. "/autosave.txt"
+    local saveStat = cfg:Stat({ Name = "Auto-save", Value = "Off", Icon = "clock" })
+    local lastSnapshot, warnedOverwrite
+    local function snapshot() return HttpService:JSONEncode(serializeFlags()) end
+    local function autoSave()
+        if not (self.AutoSave and canUseFiles()) then return end
+        local snap = snapshot()
+        if snap == lastSnapshot then return end
+        local target = self.ActiveConfig
+        if not target then
+            local name = current()
+            if isfile(self.ConfigFolder .. "/" .. name .. ".json") then
+                if not warnedOverwrite then
+                    warnedOverwrite = true
+                    Prism:Notify({
+                        Title = "Auto-save paused",
+                        Content = "<b>" .. name .. "</b> already exists and isn't loaded. Load it, or overwrite it with your current settings.",
+                        Type = "Warning",
+                        Duration = 12,
+                        Buttons = {
+                            { Name = "Load it", Primary = true, Callback = function() self:LoadConfig(name) end },
+                            { Name = "Overwrite", Callback = function() self.ActiveConfig = name end },
+                        },
+                    })
+                end
+                return
+            end
+            target = name
+        end
+        lastSnapshot = snap
+        local isNew = not isfile(self.ConfigFolder .. "/" .. target .. ".json")
+        if self:SaveConfig(target) then
+            saveStat:Set(target .. "  ·  " .. os.date("%H:%M:%S"))
+            if isNew then refresh() end
+        end
+    end
+    self._autoSaveFinal = autoSave
+    local autoSaveDefault = canUseFiles() and isfile(autoSavePath) or false
+    self.AutoSave = autoSaveDefault
+    if autoSaveDefault then saveStat:Set("Waiting for changes") end
+    cfg:Toggle({
+        Name = "Auto-save",
+        HideFromList = true,
+        Description = "Saves your settings a couple of seconds after you change them, and on unload.",
+        Default = autoSaveDefault,
+        Callback = function(on)
+            self.AutoSave = on
+            warnedOverwrite = false
+            saveStat:Set(on and "Waiting for changes" or "Off")
+            if not canUseFiles() then return end
+            ensureFolder(self.ConfigFolder)
+            if on then
+                writefile(autoSavePath, "1")
+            elseif delfile and isfile(autoSavePath) then
+                delfile(autoSavePath)
+            end
+        end,
+    })
+    task.spawn(function()
+        task.wait(3) -- let the startup config apply first; that's the baseline
+        lastSnapshot = snapshot()
+        while self.Gui.Parent and not self._unloaded do
+            pcall(autoSave)
+            task.wait(2)
+        end
+    end)
 
     -- Info ------------------------------------------------------------------
     local info = tab:Section({ Name = "Info", Icon = "info", Side = "Right" })
@@ -6678,16 +7224,322 @@ function Window:SettingsTab(opts)
         Callback = function() self:Unload() end,
     })
 
-    -- Autoload
-    if canUseFiles() and isfile(autoPath) then
-        local name = readfile(autoPath)
-        task.defer(function()
-            nameBox:Set(name, true)
-            if self:LoadConfig(name) then
-                Prism:Notify({ Title = "Autoloaded", Content = "Config <b>" .. name .. "</b>.", Type = "Success" })
+    -- Startup config: this place's profile, then this account's, then the
+    -- plain autoload.
+    local startName, reason = self:GetProfile("Place"), "bound to this place"
+    if not startName then startName, reason = self:GetProfile("Account"), "bound to your account" end
+    if not startName then startName, reason = autoloadName(), "autoload" end
+    task.defer(function()
+        if startName then
+            nameBox:Set(startName, true)
+            if self:LoadConfig(startName) then
+                Prism:Notify({ Title = "Config loaded", Content = "<b>" .. startName .. "</b>  ·  " .. reason, Type = "Success" })
             end
+        end
+        syncProfiles()
+    end)
+    return tab
+end
+
+-- ============================================================================
+--  UTILITY TAB
+-- ============================================================================
+--  Window:UtilityTab() adds a ready-made Utility tab:
+--
+--    Server       live server info, rejoin, server hop, join by id, copy
+--                 join link / script
+--    Performance  FPS cap, low graphics, 3D rendering off, mute game
+--    Player       anti-AFK, auto-rejoin on disconnect
+--
+--  Everything is flagged (Prism_Util_*), so it saves with configs, and the
+--  toggles switch off (restoring the game) on unload.
+-- ============================================================================
+local function httpGet(url)
+    local ok, body = pcall(function() return game:HttpGet(url) end)
+    if ok and type(body) == "string" then return body end
+    local req = (syn and syn.request) or (http and http.request) or http_request or request
+    if not req then return nil end
+    local ok2, res = pcall(req, { Url = url, Method = "GET" })
+    return ok2 and res and res.Body or nil
+end
+
+-- Public servers of this place, minus this one. sort: "Asc" | "Desc".
+local function fetchServers(sort)
+    local url = string.format(
+        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=%s&limit=100&excludeFullGames=true",
+        game.PlaceId, sort)
+    local body = httpGet(url)
+    if not body then return nil, "Your executor can't make web requests." end
+    local ok, data = pcall(HttpService.JSONDecode, HttpService, body)
+    if not ok or typeof(data) ~= "table" or typeof(data.data) ~= "table" then
+        return nil, "Roblox didn't return a server list. Try again in a bit."
+    end
+    local out = {}
+    for _, server in ipairs(data.data) do
+        if server.id ~= game.JobId and (server.playing or 0) < (server.maxPlayers or 0) then
+            table.insert(out, server)
+        end
+    end
+    return out
+end
+
+function Window:UtilityTab(opts)
+    opts = opts or {}
+    local TeleportService = svc("TeleportService")
+    local GuiService = svc("GuiService")
+    local tab = self:Tab({
+        Name = opts.Name or "Utility",
+        Icon = opts.Icon or "wrench",
+        Description = "Server, performance and session tools",
+    })
+
+    -- Server ----------------------------------------------------------------
+    local server = tab:Section({ Name = "Server", Icon = "server", Side = "Left" })
+    server:Stat({
+        Name = "Players",
+        Icon = "users",
+        Bind = function() return #Players:GetPlayers() .. " / " .. Players.MaxPlayers end,
+    })
+    server:Stat({
+        Name = "Server age",
+        Icon = "clock",
+        BindInterval = 1,
+        Bind = function()
+            local t = math.floor(workspace.DistributedGameTime)
+            return string.format("%02d:%02d:%02d", t // 3600, t // 60 % 60, t % 60)
+        end,
+    })
+    server:Stat({
+        Name = "Ping",
+        Icon = "activity",
+        BindInterval = 0.5,
+        Bind = function() return stats.Ping .. " ms" end,
+    })
+
+    local function rejoin()
+        Prism:Notify({ Title = "Rejoining", Content = "Hang on...", Type = "Loading" })
+        if #Players:GetPlayers() <= 1 then
+            TeleportService:Teleport(game.PlaceId, LocalPlayer)
+        else
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+        end
+    end
+
+    -- Server hop: tries servers in order until a teleport goes through.
+    local hopMode = "Smallest"
+    local hopping = false
+    local function hop()
+        if hopping then return end
+        hopping = true
+        local toast = Prism:Notify({ Title = "Server hop", Content = "Finding a server...", Type = "Loading" })
+        task.spawn(function()
+            local servers, err = fetchServers(hopMode == "Largest" and "Desc" or "Asc")
+            if not servers or #servers == 0 then
+                hopping = false
+                toast:Update({ Title = "Server hop failed", Content = err or "No other servers with space.", Type = "Error" })
+                return
+            end
+            if hopMode == "Random" then
+                for i = #servers, 2, -1 do
+                    local j = math.random(1, i)
+                    servers[i], servers[j] = servers[j], servers[i]
+                end
+            end
+            for i = 1, math.min(#servers, 5) do
+                local s = servers[i]
+                toast:Update({ Content = string.format("Joining a server with %d / %d players...", s.playing or 0, s.maxPlayers or 0) })
+                local failed = false
+                local conn = TeleportService.TeleportInitFailed:Connect(function(player)
+                    if player == LocalPlayer then failed = true end
+                end)
+                pcall(TeleportService.TeleportToPlaceInstance, TeleportService, game.PlaceId, s.id, LocalPlayer)
+                local waited = 0
+                while not failed and waited < 8 do
+                    waited += task.wait(0.25)
+                end
+                conn:Disconnect()
+                if not failed then return end -- still here after 8s without a failure: let it finish
+            end
+            hopping = false
+            toast:Update({ Title = "Server hop failed", Content = "Every server refused the teleport.", Type = "Error" })
         end)
     end
+
+    server:ButtonRow({
+        { Name = "Rejoin", Icon = "refresh-cw", Callback = rejoin },
+        { Name = "Server hop", Icon = "shuffle", Callback = hop },
+    })
+    server:Segmented({
+        Name = "Hop to",
+        Description = "Which server Server hop picks.",
+        Options = { "Smallest", "Random", "Largest" },
+        Default = "Smallest",
+        Flag = "Prism_Util_HopMode",
+        Callback = function(v) hopMode = v end,
+    })
+    server:Textbox({
+        Name = "Join server",
+        Description = "Paste a server id (JobId) and press Enter.",
+        Placeholder = "JobId...",
+        ClearOnEnter = true,
+        Callback = function(id)
+            id = string.gsub(id, "%s", "")
+            if id == "" then return end
+            Prism:Notify({ Title = "Joining server", Content = id, Type = "Loading" })
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, id, LocalPlayer)
+        end,
+    })
+    local function copy(text, what)
+        if setclipboard then
+            setclipboard(text)
+            Prism:Notify({ Title = what .. " copied", Content = text, Type = "Success" })
+        else
+            Prism:Notify({ Title = "Can't copy", Content = "Your executor has no clipboard access.", Type = "Error" })
+        end
+    end
+    server:ButtonRow({
+        { Name = "Copy id", Icon = "hash", Callback = function() copy(game.JobId, "Server id") end },
+        {
+            Name = "Join link",
+            Icon = "link",
+            Callback = function()
+                copy(string.format("roblox://experiences/start?placeId=%d&gameInstanceId=%s", game.PlaceId, game.JobId), "Join link")
+            end,
+        },
+        {
+            Name = "Join script",
+            Icon = "copy",
+            Callback = function()
+                copy(string.format('game:GetService("TeleportService"):TeleportToPlaceInstance(%d, "%s")', game.PlaceId, game.JobId), "Join script")
+            end,
+        },
+    })
+
+    -- Performance -----------------------------------------------------------
+    local perf = tab:Section({ Name = "Performance", Icon = "gauge", Side = "Right" })
+    perf:Stat({
+        Name = "FPS",
+        Icon = "monitor",
+        BindInterval = 0.5,
+        Bind = function() return tostring(stats.FPS) end,
+    })
+    if setfpscap then
+        perf:Slider({
+            Name = "FPS cap",
+            Description = "0 removes the cap.",
+            Min = 0, Max = 360, Increment = 5, Suffix = " fps",
+            Flag = "Prism_Util_FPSCap",
+            Callback = function(v) pcall(setfpscap, v) end,
+        })
+    end
+
+    local lowGfx = {}
+    perf:Toggle({
+        Name = "Low graphics",
+        HideFromList = true,
+        Description = "Lowest render quality, no shadows or post effects.",
+        Flag = "Prism_Util_LowGfx",
+        Callback = function(on)
+            if on then
+                lowGfx.Shadows = Lighting.GlobalShadows
+                Lighting.GlobalShadows = false
+                pcall(function()
+                    lowGfx.Quality = settings().Rendering.QualityLevel
+                    settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+                end)
+                lowGfx.Effects = {}
+                for _, fx in ipairs(Lighting:GetChildren()) do
+                    if fx:IsA("PostEffect") and fx.Enabled then
+                        fx.Enabled = false
+                        table.insert(lowGfx.Effects, fx)
+                    end
+                end
+            elseif lowGfx.Effects then
+                Lighting.GlobalShadows = lowGfx.Shadows
+                pcall(function() settings().Rendering.QualityLevel = lowGfx.Quality end)
+                for _, fx in ipairs(lowGfx.Effects) do
+                    if fx.Parent then fx.Enabled = true end
+                end
+                lowGfx.Effects = nil
+            end
+        end,
+    })
+    perf:Toggle({
+        Name = "Disable 3D rendering",
+        HideFromList = true,
+        Description = "Blank world, UI only. Big CPU and GPU savings while AFK.",
+        Flag = "Prism_Util_No3D",
+        Callback = function(on) pcall(RunService.Set3dRenderingEnabled, RunService, not on) end,
+    })
+    local volume
+    perf:Toggle({
+        Name = "Mute game",
+        HideFromList = true,
+        Description = "Sets the master volume to 0. Restored when turned off.",
+        Flag = "Prism_Util_Mute",
+        Callback = function(on)
+            pcall(function()
+                local gs = UserSettings():GetService("UserGameSettings")
+                if on then
+                    volume = gs.MasterVolume
+                    gs.MasterVolume = 0
+                elseif volume then
+                    gs.MasterVolume = volume
+                end
+            end)
+        end,
+    })
+
+    -- Player ----------------------------------------------------------------
+    local player = tab:Section({ Name = "Player", Icon = "user", Side = "Left" })
+    local afkConn
+    player:Toggle({
+        Name = "Anti-AFK",
+        HideFromList = true,
+        Description = "Stops the 20-minute idle kick.",
+        Flag = "Prism_Util_AntiAFK",
+        Callback = function(on)
+            if afkConn then afkConn:Disconnect() afkConn = nil end
+            if not on then return end
+            local vu = svc("VirtualUser")
+            afkConn = LocalPlayer.Idled:Connect(function()
+                pcall(function()
+                    vu:CaptureController()
+                    vu:ClickButton2(Vector2.new())
+                end)
+            end)
+            table.insert(self._conns, afkConn)
+        end,
+    })
+
+    local autoRejoin = false
+    player:Toggle({
+        Name = "Auto-rejoin on disconnect",
+        HideFromList = true,
+        Description = "Rejoins by itself after a kick or lost connection.",
+        Flag = "Prism_Util_AutoRejoin",
+        Callback = function(on) autoRejoin = on end,
+    })
+    local rejoining = false
+    local function onDisconnect()
+        if not autoRejoin or rejoining or self._unloaded then return end
+        rejoining = true
+        task.wait(2)
+        while not self._unloaded do
+            pcall(TeleportService.Teleport, TeleportService, game.PlaceId, LocalPlayer)
+            task.wait(10)
+        end
+    end
+    table.insert(self._conns, GuiService.ErrorMessageChanged:Connect(function()
+        if GuiService:GetErrorMessage() ~= "" then task.spawn(onDisconnect) end
+    end))
+    pcall(function()
+        local overlay = CoreGui:FindFirstChild("RobloxPromptGui"):FindFirstChild("promptOverlay")
+        table.insert(self._conns, overlay.ChildAdded:Connect(function(child)
+            if child.Name == "ErrorPrompt" then task.spawn(onDisconnect) end
+        end))
+    end)
+
     return tab
 end
 
@@ -6704,6 +7556,8 @@ end
 function Window:Unload()
     if self._unloaded then return end
     self._unloaded = true
+    -- Auto-save gets the real state, before everything is switched off.
+    if self._autoSaveFinal then pcall(self._autoSaveFinal) end
     for _, el in pairs(Prism.Flags) do
         if el.Value == true and el.Set then pcall(el.Set, el, false) end
     end
@@ -6896,6 +7750,14 @@ end
 --          Name = "EspName", NameColor = "EspNameColor",
 --          Health = "EspHealth", Distance = "EspDistance",
 --          Tracer = "EspTracer", TracerColor = "EspTracerColor",
+--          BoxFill = "EspFill", Skeleton = "EspSkel", SkeletonColor = "EspSkelColor",
+--          Chakra = "EspChakra", Blood = "EspBlood",   -- right-side / bottom bars
+--          BarWidth = "EspBarWidth",                    -- bar thickness in px (default 3)
+--          -- Lines: a function returning { { Text = "...", Color = Color3 }, ... },
+--          -- drawn as a stack above the head (bottom line first). When given,
+--          -- it replaces the plain name label, so a script can preview its
+--          -- own info lines exactly as its ESP draws them.
+--          Lines = function() return { ... } end,
 --      },
 --      Defaults = { Box = true, ... }, -- for features without a flag
 --      Width = 210, Height = nil,    -- height defaults to the window's
@@ -7136,6 +7998,56 @@ function Window:ESPPreview(opts)
         BorderSizePixel = 0,
         Parent = overlay,
     })
+    local fill = new("Frame", { BorderSizePixel = 0, BackgroundTransparency = 0.82, ZIndex = 0, Parent = overlay })
+    -- Chakra (right, fills up) and blood (bottom, fills right) bars.
+    local function barPair(color, anchorFill)
+        local back = new("Frame", {
+            BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.4, BorderSizePixel = 0,
+            Visible = false, Parent = overlay,
+        })
+        local f = new("Frame", {
+            AnchorPoint = anchorFill, Position = UDim2.fromScale(anchorFill.X, anchorFill.Y),
+            BackgroundColor3 = color, BorderSizePixel = 0, Parent = back,
+        })
+        return back, f
+    end
+    local chakraBack, chakraFill = barPair(Color3.fromRGB(70, 160, 255), Vector2.new(0, 1))
+    local bloodBack, bloodFill = barPair(Color3.fromRGB(200, 30, 45), Vector2.new(0, 0))
+    -- Rotated 1px frames drawing a line between two stage points.
+    local function lineFrame()
+        return new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0, BackgroundColor3 = WHITE, Parent = overlay })
+    end
+    local function placeLine(f, a, b, color)
+        local d = b - a
+        f.Position = UDim2.fromOffset((a.X + b.X) / 2, (a.Y + b.Y) / 2)
+        f.Size = UDim2.fromOffset(d.Magnitude, 1)
+        f.Rotation = math.deg(math.atan2(d.Y, d.X))
+        f.BackgroundColor3 = color
+        f.Visible = true
+    end
+    local bones = {}
+    for i = 1, 14 do bones[i] = lineFrame() end
+    local BONES_R15 = {
+        { "Head", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
+        { "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
+        { "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
+        { "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
+        { "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+    }
+    local stack = {}
+    for i = 1, 8 do
+        stack[i] = new("TextLabel", {
+            AnchorPoint = Vector2.new(0.5, 1),
+            Size = UDim2.fromOffset(200, 12),
+            BackgroundTransparency = 1,
+            FontFace = Fonts.SemiBold,
+            TextColor3 = WHITE,
+            TextSize = 10,
+            TextStrokeTransparency = 0.4,
+            Visible = false,
+            Parent = overlay,
+        })
+    end
 
     -- Drag the stage to turn the model.
     local dragArea = new("TextButton", {
@@ -7296,18 +8208,95 @@ function Window:ESPPreview(opts)
             c.BackgroundColor3 = boxColor
         end
 
-        nameLabel.Visible = read("Name") and true or false
+        fill.Visible = (boxOn and read("BoxFill")) and true or false
+        fill.Position = UDim2.fromOffset(minV.X, minV.Y)
+        fill.Size = UDim2.fromOffset(bw, bh)
+        fill.BackgroundColor3 = boxColor
+
+        -- Skeleton from the clone's own parts. R6 limbs run from the
+        -- shoulder / hip joint to the end of the hand / foot.
+        local skelOn = read("Skeleton")
+        local hum = model:FindFirstChildOfClass("Humanoid")
+        local segs = {}
+        if skelOn then
+            if hum and hum.RigType == Enum.HumanoidRigType.R15 then
+                for _, pair in ipairs(BONES_R15) do
+                    local a, b = model:FindFirstChild(pair[1]), model:FindFirstChild(pair[2])
+                    if a and b then table.insert(segs, { a.Position, b.Position }) end
+                end
+            else
+                local torso, head = model:FindFirstChild("Torso"), model:FindFirstChild("Head")
+                if torso then
+                    local half = torso.Size.Y / 2
+                    local neck = (torso.CFrame * CFrame.new(0, half, 0)).Position
+                    local pelvis = (torso.CFrame * CFrame.new(0, -half, 0)).Position
+                    if head then table.insert(segs, { head.Position, neck }) end
+                    table.insert(segs, { neck, pelvis })
+                    for _, l in ipairs({ { "Left Arm", neck }, { "Right Arm", neck }, { "Left Leg", pelvis }, { "Right Leg", pelvis } }) do
+                        local part = model:FindFirstChild(l[1])
+                        if part then
+                            local h = part.Size.Y / 2
+                            local top = (part.CFrame * CFrame.new(0, h * 0.8, 0)).Position
+                            table.insert(segs, { l[2], top })
+                            table.insert(segs, { top, (part.CFrame * CFrame.new(0, -h, 0)).Position })
+                        end
+                    end
+                end
+            end
+        end
+        for i, f in ipairs(bones) do
+            local sg = segs[i]
+            local pa = sg and project(sg[1], stageSize)
+            local pb = sg and project(sg[2], stageSize)
+            if pa and pb then placeLine(f, pa, pb, read("SkeletonColor") or WHITE) else f.Visible = false end
+        end
+
+        -- Text stack (script-supplied) or the plain name label
+        local lines = read("Lines")
+        if type(lines) == "table" then
+            nameLabel.Visible = false
+            local y = minV.Y - 3
+            for i, lbl in ipairs(stack) do
+                local ln = lines[i]
+                if ln then
+                    lbl.Text = tostring(ln.Text or ln[1] or "")
+                    lbl.TextColor3 = ln.Color or ln[2] or WHITE
+                    lbl.Position = UDim2.fromOffset(minV.X + bw / 2, y)
+                    lbl.Visible = true
+                    y -= 12
+                else
+                    lbl.Visible = false
+                end
+            end
+        else
+            for _, lbl in ipairs(stack) do lbl.Visible = false end
+            nameLabel.Visible = read("Name") and true or false
+        end
         nameLabel.Position = UDim2.fromOffset(minV.X + bw / 2, minV.Y - 3)
         nameLabel.TextColor3 = read("NameColor") or WHITE
 
         distLabel.Visible = read("Distance") and true or false
-        distLabel.Position = UDim2.fromOffset(minV.X + bw / 2, maxV.Y + 3)
+        distLabel.Position = UDim2.fromOffset(minV.X + bw / 2, maxV.Y + 3 + ((read("Blood") and (tonumber(read("BarWidth")) or 3) + 4) or 0))
         distLabel.Text = string.format("[%dm]", 24 + math.floor(math.sin(os.clock() * 0.8) * 6))
 
+        local barW = tonumber(read("BarWidth")) or 3
         local hp = 0.55 + 0.4 * (0.5 + 0.5 * math.sin(os.clock() * 1.3))
         healthBack.Visible = read("Health") and true or false
-        healthBack.Position = UDim2.fromOffset(minV.X - 4, minV.Y)
-        healthBack.Size = UDim2.fromOffset(3, bh)
+        healthBack.Position = UDim2.fromOffset(minV.X - barW - 2, minV.Y)
+        healthBack.Size = UDim2.fromOffset(barW, bh)
+
+        local ck = 0.4 + 0.5 * (0.5 + 0.5 * math.sin(os.clock() * 0.9 + 1))
+        chakraBack.Visible = read("Chakra") and true or false
+        chakraBack.Position = UDim2.fromOffset(maxV.X + 2, minV.Y)
+        chakraBack.Size = UDim2.fromOffset(barW, bh)
+        chakraFill.Size = UDim2.fromScale(1, ck)
+
+        local bloodOn = read("Blood") and true or false
+        local bl = 0.3 + 0.5 * (0.5 + 0.5 * math.sin(os.clock() * 0.7 + 2))
+        bloodBack.Visible = bloodOn
+        bloodBack.Position = UDim2.fromOffset(minV.X, maxV.Y + 3)
+        bloodBack.Size = UDim2.fromOffset(bw, barW)
+        bloodFill.Size = UDim2.fromScale(bl, 1)
         healthFill.Size = UDim2.fromScale(1, hp)
         healthFill.BackgroundColor3 = Theme.Error:Lerp(Theme.Success, hp)
 
@@ -8027,8 +9016,236 @@ local function dependencyMet(dep)
     return true
 end
 
+-- ============================================================================
+--  LIVE BINDINGS
+-- ============================================================================
+--  Any element takes Bind = source (or el:Bind(source, opts) later) and
+--  follows that data on its own. A source is one of:
+--    function() return value end   polled every BindInterval s (default 0.25)
+--    a ValueBase (IntValue, ...)   follows .Changed
+--    { instance, "Property" }      follows the property
+--    { instance, "@Attribute" }    follows the attribute
+--  Display elements (Stat, Paragraph, Progress) get every value the
+--  source returns: Progress:Set(value, text), Paragraph:Set(title, content).
+--  Inputs are set silently (callbacks don't fire; BindFires = true to fire),
+--  and only when the source changes, so the user can still change them.
+--  Format = function(...) return display end reshapes values first.
+-- ============================================================================
+local function bindKey(packed)
+    local parts = table.create(packed.n)
+    for i = 1, packed.n do
+        local v = packed[i]
+        if type(v) == "table" then
+            local items = {}
+            for _, item in ipairs(v) do table.insert(items, tostring(item)) end
+            v = "{" .. table.concat(items, "\2") .. "}"
+        end
+        parts[i] = typeof(v) .. ":" .. tostring(v)
+    end
+    return table.concat(parts, "\1")
+end
+
+function Window:_bind(el, source, opts)
+    opts = opts or {}
+    local read, signal
+    if typeof(source) == "function" then
+        read = source
+    elseif typeof(source) == "Instance" and source:IsA("ValueBase") then
+        read = function() return source.Value end
+        signal = source.Changed
+    elseif typeof(source) == "table" and typeof(source[1]) == "Instance" and type(source[2]) == "string" then
+        local inst, prop = source[1], source[2]
+        if string.sub(prop, 1, 1) == "@" then
+            local attr = string.sub(prop, 2)
+            read = function() return inst:GetAttribute(attr) end
+            signal = inst:GetAttributeChangedSignal(attr)
+        else
+            read = function() return inst[prop] end
+            signal = inst:GetPropertyChangedSignal(prop)
+        end
+    else
+        warn("[Prism] Bind: expected a function, a ValueBase or { Instance, \"Property\" }")
+        return
+    end
+
+    local b = { Element = el, Interval = not signal and (opts.Interval or 0.25) or nil, Next = 0 }
+    local function pull()
+        local ok, packed = pcall(function() return table.pack(read()) end)
+        if not ok then return end
+        if opts.Format then
+            ok, packed = pcall(function() return table.pack(opts.Format(table.unpack(packed, 1, packed.n))) end)
+            if not ok then return end
+        end
+        local key = bindKey(packed)
+        if key == b.Last then return end
+        b.Last = key
+        if opts.Apply then
+            opts.Apply(table.unpack(packed, 1, packed.n))
+        elseif el.Get then
+            el:Set(packed[1], not opts.Fire)
+        else
+            el:Set(table.unpack(packed, 1, packed.n))
+        end
+    end
+    b.Pull = pull
+    if signal then
+        b.Conn = signal:Connect(pull)
+        table.insert(self._conns, b.Conn)
+    end
+    self._bindings[b] = true
+    pull()
+
+    if self._bindLoop then return b end
+    self._bindLoop = true
+    task.spawn(function()
+        while self.Gui.Parent do
+            local now = os.clock()
+            for binding in pairs(self._bindings) do
+                local frame = binding.Element.Frame
+                if frame and not frame.Parent then
+                    self._bindings[binding] = nil
+                    if binding.Conn then binding.Conn:Disconnect() end
+                elseif binding.Interval and now >= binding.Next then
+                    binding.Next = now + binding.Interval
+                    task.spawn(binding.Pull)
+                end
+            end
+            task.wait(0.05)
+        end
+    end)
+    return b
+end
+
+function Window:_unbind(el)
+    for b in pairs(self._bindings) do
+        if b.Element == el then
+            self._bindings[b] = nil
+            if b.Conn then b.Conn:Disconnect() end
+        end
+    end
+end
+
+-- ============================================================================
+--  KEYBIND CONFLICTS
+-- ============================================================================
+--  Binding a key that's already in use (another toggle, a Keybind, or the
+--  menu key) pops a warning with Unbind others / Undo / Keep both. Loading
+--  a config checks every bind at once.
+-- ============================================================================
+function Window:_keyUsers(key, except)
+    local out = {}
+    if not key then return out end
+    for _, t in ipairs(self._bindables) do
+        if t ~= except and t.Key == key then
+            table.insert(out, { Name = t.Name or t:GetName(), Clear = function() t:SetKey(nil) end })
+        end
+    end
+    for _, k in ipairs(self._keybinds) do
+        if k ~= except and not k._isMenu and k.Value == key and k.Frame.Parent then
+            table.insert(out, { Name = k:GetName(), Clear = function() k:Set(nil) end })
+        end
+    end
+    if self.ToggleKey == key and not (except and except._isMenu) then
+        table.insert(out, { Name = "Menu key" })
+    end
+    return out
+end
+
+function Window:_warnKeyConflict(owner, key, undo)
+    local others = self:_keyUsers(key, owner)
+    if #others == 0 then return end
+    local names, clearable = {}, {}
+    for _, o in ipairs(others) do
+        table.insert(names, "<b>" .. o.Name .. "</b>")
+        if o.Clear then table.insert(clearable, o) end
+    end
+    local buttons = {}
+    if #clearable > 0 then
+        table.insert(buttons, {
+            Name = "Unbind others",
+            Primary = true,
+            Callback = function() for _, o in ipairs(clearable) do o.Clear() end end,
+        })
+    end
+    table.insert(buttons, { Name = "Undo", Callback = undo })
+    table.insert(buttons, { Name = "Keep both" })
+    Prism:Notify({
+        Title = "Key conflict",
+        Content = "<b>" .. key.Name .. "</b> is also bound to " .. table.concat(names, ", ") .. ".",
+        Type = "Warning",
+        Duration = 10,
+        Merge = false,
+        Buttons = buttons,
+    })
+end
+
+-- Every key bound more than once: { { Key, Names = { ... } }, ... }.
+function Window:FindKeyConflicts()
+    local byKey, order = {}, {}
+    local function add(key, name)
+        if not key then return end
+        if not byKey[key] then
+            byKey[key] = {}
+            table.insert(order, key)
+        end
+        table.insert(byKey[key], name)
+    end
+    for _, t in ipairs(self._bindables) do add(t.Key, t.Name or t:GetName()) end
+    for _, k in ipairs(self._keybinds) do
+        if not k._isMenu and k.Frame.Parent then add(k.Value, k:GetName()) end
+    end
+    add(self.ToggleKey, "Menu key")
+    local out = {}
+    for _, key in ipairs(order) do
+        if #byKey[key] > 1 then table.insert(out, { Key = key, Names = byKey[key] }) end
+    end
+    return out
+end
+
+function Window:_reportKeyConflicts()
+    local conflicts = self:FindKeyConflicts()
+    if #conflicts == 0 then return end
+    local lines = {}
+    for _, c in ipairs(conflicts) do
+        table.insert(lines, "<b>" .. c.Key.Name .. "</b>: " .. table.concat(c.Names, ", "))
+    end
+    Prism:Notify({
+        Title = #conflicts == 1 and "1 key conflict" or (#conflicts .. " key conflicts"),
+        Content = table.concat(lines, "\n"),
+        Type = "Warning",
+        Duration = 8,
+    })
+end
+
+-- Shared per-element extras, given to every element: live bindings,
+-- change listeners, and DependsOn rules.
 function Window:_depends(el, opts)
-    if not (opts and opts.DependsOn) then return end
+    opts = opts or {}
+    function el.Bind(selfEl, source, bindOpts)
+        self:_bind(selfEl, source, bindOpts)
+        return selfEl
+    end
+    function el.Unbind(selfEl) self:_unbind(selfEl) end
+    -- el:OnChanged(fn): runs fn alongside the element's own callback.
+    local listeners
+    function el.OnChanged(selfEl, fn)
+        if not listeners then
+            listeners = {}
+            local field = selfEl._changeField or "Callback"
+            local original = opts[field]
+            opts[field] = function(...)
+                safeCall(original, ...)
+                for _, listener in ipairs(listeners) do safeCall(listener, ...) end
+            end
+        end
+        table.insert(listeners, fn)
+        return selfEl
+    end
+    if opts.Bind ~= nil then
+        self:_bind(el, opts.Bind, { Format = opts.Format, Interval = opts.BindInterval, Fire = opts.BindFires })
+    end
+
+    if not opts.DependsOn then return end
     table.insert(self._deps, {
         Element = el,
         Rule = opts.DependsOn,
