@@ -6711,6 +6711,7 @@ end
 
 function Window:SaveConfig(name)
     if not canUseFiles() then return false end
+    if name == "profiles" then return false end -- reserved: profiles.json
     ensureFolder(self.ConfigFolder)
     local data = serializeFlags()
     data.__meta = { Saved = os.time(), Version = Prism.Version }
@@ -6808,12 +6809,44 @@ function Window:GetProfile(scope)
     return self:_readProfiles()[scope][profileId(scope)]
 end
 
+-- Renames a saved config, carrying its autoload and account binding along.
+-- Returns true, or false + reason.
+function Window:RenameConfig(old, new)
+    if not canUseFiles() then return false, "Your executor doesn't support file access." end
+    new = string.gsub(tostring(new or ""), "^%s*(.-)%s*$", "%1")
+    if new == "" then return false, "Type the new name in Config name." end
+    if new == old then return false, "That's already its name." end
+    if new == "profiles" then return false, "That name is reserved. Pick another." end
+    local from, to = self.ConfigFolder .. "/" .. old .. ".json", self.ConfigFolder .. "/" .. new .. ".json"
+    if not isfile(from) then return false, "That config no longer exists." end
+    if isfile(to) then return false, "A config called " .. new .. " already exists." end
+    writefile(to, readfile(from))
+    delfile(from)
+    local autoPath = self.ConfigFolder .. "/autoload.txt"
+    if isfile(autoPath) and readfile(autoPath) == old then writefile(autoPath, new) end
+    if self:GetProfile("Account") == old then self:SetProfile("Account", new) end
+    if self.ActiveConfig == old then self.ActiveConfig = new end
+    return true
+end
+
+-- Copies a saved config to a free name ("legit copy", "legit copy 2"...).
+-- Returns the new name, or nil + reason.
+function Window:DuplicateConfig(name)
+    if not canUseFiles() then return nil, "Your executor doesn't support file access." end
+    local from = self.ConfigFolder .. "/" .. name .. ".json"
+    if not isfile(from) then return nil, "That config no longer exists." end
+    local copy = self:_freeConfigName(name .. " copy")
+    writefile(self.ConfigFolder .. "/" .. copy .. ".json", readfile(from))
+    return copy
+end
+
 function Window:ListConfigs()
     local out = {}
     if not (listfiles and isfolder and isfolder(self.ConfigFolder)) then return out end
     for _, file in ipairs(listfiles(self.ConfigFolder)) do
         local name = string.match(file, "([^/\\]+)%.json$")
-        if name then table.insert(out, name) end
+        -- profiles.json holds the account autoloads, not a config.
+        if name and name ~= "profiles" then table.insert(out, name) end
     end
     table.sort(out)
     return out
@@ -7200,6 +7233,42 @@ function Window:SettingsTab(opts)
                     nameBox:Set("", true)
                     refresh(false)
                     Prism:Notify({ Title = "Config deleted", Content = "<b>" .. name .. "</b>", Type = "Warning" })
+                end
+            end,
+        },
+    })
+
+    cfg:ButtonRow({
+        {
+            Name = "Rename",
+            Icon = "pencil",
+            Description = "Renames the selected config to the name in Config name.",
+            Callback = function()
+                local name = selected()
+                if not name then return needSelection() end
+                local new = newName()
+                local ok, err = self:RenameConfig(name, new)
+                if ok then
+                    refresh(new)
+                    Prism:Notify({ Title = "Config renamed", Content = "<b>" .. name .. "</b> → <b>" .. new .. "</b>", Type = "Success" })
+                else
+                    Prism:Notify({ Title = "Can't rename", Content = err, Type = "Warning" })
+                end
+            end,
+        },
+        {
+            Name = "Duplicate",
+            Icon = "copy",
+            Description = "Makes a copy of the selected config.",
+            Callback = function()
+                local name = selected()
+                if not name then return needSelection() end
+                local copy, err = self:DuplicateConfig(name)
+                if copy then
+                    refresh(copy)
+                    Prism:Notify({ Title = "Config duplicated", Content = "<b>" .. copy .. "</b>", Type = "Success" })
+                else
+                    Prism:Notify({ Title = "Can't duplicate", Content = err, Type = "Warning" })
                 end
             end,
         },
