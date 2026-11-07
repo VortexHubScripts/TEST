@@ -1767,9 +1767,12 @@ showToast = function(handle)
         BackgroundTransparency = 1,
         Parent = wrapper,
     })
-    local pop = new("UIScale", { Scale = 0.94, Parent = mover })
+    local pop = new("UIScale", { Scale = 1, Parent = mover })
     dropShadow(mover, "Popup")
 
+    -- Flat card: a solid stripe of the type colour down the left edge, a
+    -- small icon beside a bold title, the message under it, and a thin
+    -- countdown line along the bottom.
     local card = new("TextButton", {
         Size = UDim2.new(1, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
@@ -1779,55 +1782,34 @@ showToast = function(handle)
         BorderSizePixel = 0,
         ClipsDescendants = true,
         Parent = mover,
-    }, { corner(7), outline(), padding(10, 12, 14, 10) })
+    }, { corner(3), outline(), padding(9, 11, 13, 10) })
 
-    -- Faint wash of the type colour from the left, plus a slim indicator
-    -- pill. Both live in the mover, not the auto-sized card, so they can't
-    -- feed back into the card's height.
-    local wash = new("Frame", {
-        Size = UDim2.new(0, 120, 1, 0),
-        BackgroundColor3 = color,
-        BackgroundTransparency = 0.93,
-        BorderSizePixel = 0,
-        ZIndex = 2,
-        Parent = mover,
-    }, {
-        corner(7),
-        new("UIGradient", { Transparency = NumberSequence.new(0, 1) }),
-    })
+    -- Lives in the mover, not the auto-sized card, so it can't feed back
+    -- into the card's height.
     local bar = new("Frame", {
-        Position = UDim2.new(0, 4, 0, 10),
-        Size = UDim2.new(0, 2, 1, -20),
+        Size = UDim2.new(0, 3, 1, 0),
         BackgroundColor3 = color,
         BorderSizePixel = 0,
         ZIndex = 2,
         Parent = mover,
-    }, { corner("full") })
+    }, { corner(2) })
 
-    local badge = new("Frame", {
-        Size = UDim2.fromOffset(26, 26),
-        BackgroundColor3 = color,
-        BackgroundTransparency = 0.86,
-        BorderSizePixel = 0,
+    local iconImg = icon(opts.Icon or kind.Icon, 13, color, {
+        Position = UDim2.fromOffset(0, 1),
         Parent = card,
-    }, { corner("full") })
-    local iconImg = icon(opts.Icon or kind.Icon, 14, color, {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromScale(0.5, 0.5),
-        Parent = badge,
     })
 
     local text = new("Frame", {
-        Position = UDim2.fromOffset(36, 0),
-        Size = UDim2.new(1, -56, 0, 0),
+        Position = UDim2.fromOffset(20, 0),
+        Size = UDim2.new(1, -40, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
         Parent = card,
-    }, { new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    }, { new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
     local titleLabel = new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 14),
+        Size = UDim2.new(1, 0, 0, 15),
         BackgroundTransparency = 1,
-        FontFace = Fonts.SemiBold,
+        FontFace = Fonts.Bold,
         Text = "",
         RichText = true,
         TextColor3 = Theme.Text,
@@ -1917,14 +1899,14 @@ showToast = function(handle)
 
     local timer = new("Frame", {
         AnchorPoint = Vector2.new(0, 1),
-        Position = UDim2.new(0, 8, 1, -1),
-        Size = UDim2.new(1, -16, 0, 2),
+        Position = UDim2.new(0, 0, 1, 0),
+        Size = UDim2.new(1, 0, 0, 2),
         BackgroundColor3 = color,
-        BackgroundTransparency = 0.3,
+        BackgroundTransparency = 0.15,
         BorderSizePixel = 0,
         ZIndex = 2,
         Parent = mover,
-    }, { corner("full") })
+    })
 
     -- The wrapper's height follows the card. Not AutomaticSize: the shadow
     -- and timer are scale-sized and would feed back into it.
@@ -1959,7 +1941,7 @@ showToast = function(handle)
         color = kind.Color()
         iconImg.Image = resolveIcon(opts.Icon or kind.Icon) or ""
         iconImg.Rotation = 0
-        for _, f in ipairs({ badge, wash, bar, timer }) do
+        for _, f in ipairs({ bar, timer }) do
             tween(f, 0.2, { BackgroundColor3 = color })
         end
         tween(iconImg, 0.2, { ImageColor3 = color })
@@ -1968,7 +1950,7 @@ showToast = function(handle)
     local function showProgress(p)
         p = math.clamp(p, 0, 1)
         timer.Visible = true
-        tween(timer, 0.2, { Size = UDim2.new(p, -16 * p, 0, 2) })
+        tween(timer, 0.2, { Size = UDim2.new(p, 0, 0, 2) })
     end
     if type(opts.Progress) == "number" then showProgress(opts.Progress) end
 
@@ -2040,13 +2022,12 @@ showToast = function(handle)
         if not hovering then remaining -= dt end
         if type(opts.Progress) ~= "number" then
             local f = math.clamp(remaining / total, 0, 1)
-            timer.Size = UDim2.new(f, -16 * f, 0, 2)
+            timer.Size = UDim2.new(f, 0, 0, 2)
         end
         if remaining <= 0 then task.spawn(close) end
     end
 
-    tween(mover, 0.45, { Position = UDim2.fromOffset(0, 0) })
-    tween(pop, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
+    tween(mover, 0.35, { Position = UDim2.fromOffset(0, 0) }, Enum.EasingStyle.Quint)
 
     x.MouseButton1Click:Connect(function() task.spawn(close) end)
     card.MouseButton1Click:Connect(function()
@@ -3896,6 +3877,7 @@ function Section:Textbox(opts)
 
     local textbox = element(row, title, body)
     textbox.Value = box.Text
+    textbox.Box = box
 
     if opts.Numeric then
         box:GetPropertyChangedSignal("Text"):Connect(function()
@@ -5290,10 +5272,9 @@ function Prism:CreateWindow(opts)
         Parent = main,
     })
 
-    -- Window rim: a clear light edge around the window, brightest along the
-    -- top, plus a dark inner line just inside it so the edge reads on light
-    -- and dark backgrounds alike. Inset because the CanvasGroup clips its
-    -- own bounds.
+    -- Window rim: an edge line plus a dark inner line just inside it, so the
+    -- edge reads on light and dark backgrounds alike. Styled by
+    -- SetBorderStyle. Inset because the CanvasGroup clips its own bounds.
     local rim = new("Frame", {
         Position = UDim2.fromOffset(1, 1),
         Size = UDim2.new(1, -2, 1, -2),
@@ -5301,24 +5282,18 @@ function Prism:CreateWindow(opts)
         ZIndex = 10,
         Parent = main,
     }, { corner(9) })
-    local rimStroke = stroke(WHITE, 1, 0)
-    rimStroke.Parent = rim
-    new("UIGradient", {
-        Rotation = 90,
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.55),
-            NumberSequenceKeypoint.new(0.25, 0.75),
-            NumberSequenceKeypoint.new(1, 0.8),
-        }),
-        Parent = rimStroke,
-    })
+    self._rimStroke = stroke(WHITE, 1, 0)
+    self._rimStroke.Parent = rim
+    self._rimGradient = new("UIGradient", { Rotation = 90, Parent = self._rimStroke })
+    self._rimInner = stroke(Color3.new(0, 0, 0), 1, 0.45)
     new("Frame", {
         Position = UDim2.fromOffset(2, 2),
         Size = UDim2.new(1, -4, 1, -4),
         BackgroundTransparency = 1,
         ZIndex = 10,
         Parent = main,
-    }, { corner(8), stroke(Color3.new(0, 0, 0), 1, 0.45) })
+    }, { corner(8), self._rimInner })
+    self:SetBorderStyle(opts.BorderStyle or "Clean")
 
     -- Resize grip, bottom-right. The window grows down and right; its top-left
     -- corner stays put.
@@ -5678,6 +5653,51 @@ function Window:_applyBlur()
         blur = new("BlurEffect", { Name = "PrismMenuBlur", Size = 0, Parent = Lighting })
     end
     if blur then tween(blur, 0.3, { Size = want and 14 or 0 }) end
+end
+
+--  Window:SetBorderStyle(style)
+--    "Clean"   light edge, brightest along the top (default)
+--    "Accent"  solid accent-gradient edge
+--    "Orbit"   accent edge with two bright lights circling it
+--    "None"    no edge
+local function rimSequence(points)
+    local keys = {}
+    for i, v in ipairs(points) do keys[i] = NumberSequenceKeypoint.new(v[1], v[2]) end
+    return NumberSequence.new(keys)
+end
+
+function Window:SetBorderStyle(style)
+    local rimStroke, g = self._rimStroke, self._rimGradient
+    if not (rimStroke and rimStroke.Parent) then return end
+    self.BorderStyle = style
+    tickers[g] = nil
+    themeListeners[g] = nil
+    rimStroke.Transparency = style == "None" and 1 or 0
+    self._rimInner.Transparency = style == "None" and 1 or 0.45
+    if style == "Accent" or style == "Orbit" then
+        g.Color = accentSequence()
+        onThemeChanged(g, function()
+            if alive(g) then g.Color = accentSequence() else themeListeners[g] = nil end
+        end)
+    else
+        g.Color = ColorSequence.new(WHITE)
+    end
+    if style == "Accent" then
+        g.Rotation = 45
+        g.Transparency = rimSequence({ { 0, 0.15 }, { 1, 0.35 } })
+    elseif style == "Orbit" then
+        g.Transparency = rimSequence({ { 0, 0.75 }, { 0.42, 0.75 }, { 0.5, 0 }, { 0.58, 0.75 }, { 1, 0.75 } })
+        tickers[g] = function(t)
+            if not g.Parent then
+                tickers[g] = nil
+                return
+            end
+            g.Rotation = Prism.ReduceMotion and 45 or (t * 40) % 360
+        end
+    else
+        g.Rotation = 90
+        g.Transparency = rimSequence({ { 0, 0.55 }, { 0.25, 0.75 }, { 1, 0.8 } })
+    end
 end
 
 -- Window background opacity, 0..1. Lower values let the game show through
@@ -6823,6 +6843,14 @@ function Window:SettingsTab(opts)
         Flag = "Prism_Blur",
         Callback = function(on) self:SetBlur(on) end,
     })
+    look:Dropdown({
+        Name = "Window border",
+        Description = "Clean: light edge. Accent: accent-coloured edge. Orbit: lights circle the edge.",
+        Options = { "Clean", "Accent", "Orbit", "None" },
+        Default = self.BorderStyle or "Clean",
+        Flag = "Prism_Border",
+        Callback = function(style) if style then self:SetBorderStyle(style) end end,
+    })
 
     -- Behaviour -------------------------------------------------------------
     local behave = tab:Section({ Name = "Behaviour", Icon = "sliders", Side = "Left" })
@@ -6953,47 +6981,47 @@ function Window:SettingsTab(opts)
 
     -- Configs ---------------------------------------------------------------
     local cfg = tab:Section({ Name = "Configs", Icon = "save", Side = "Right" })
-    cfg:Stat({ Name = "Folder", Value = self.ConfigFolder, Icon = "folder" })
 
-    -- Everything at the top acts on the config picked in Saved configs.
-    -- The name box further down is only for saving a new one, so typing a
-    -- name never touches autoload.
+    -- Order: name, saved list, autoload toggles, Save, Load / Overwrite /
+    -- Delete, then sharing. The autoload toggles and Load / Overwrite /
+    -- Delete act on the config picked in Saved configs; Save uses the name
+    -- box. Typing a name never changes autoload.
     local syncProfiles = function() end -- set once the autoload toggles exist
-    local list, infoStat
+    local list
     local function selected()
         local v = list and list.Value
         return type(v) == "string" and v ~= "" and v or nil
     end
-    local function syncInfo()
-        if not infoStat then return end
-        local name = selected()
-        local info = name and self:GetConfigInfo(name)
-        if not info then
-            infoStat:Set("None selected")
-        else
-            infoStat:Set(info.Settings .. " settings" .. (info.Saved and ("  ·  " .. timeAgo(info.Saved)) or ""))
-        end
-    end
-    local function selectionChanged()
-        syncProfiles()
-        syncInfo()
+
+    local nameBox = cfg:Textbox({
+        Name = "Config name",
+        Placeholder = "Type a name...",
+    })
+    local function newName()
+        local raw = nameBox.Box and nameBox.Box.Text or nameBox.Value or ""
+        local v = string.gsub(raw, "^%s*(.-)%s*$", "%1")
+        return v ~= "" and v or nil
     end
     list = cfg:Dropdown({
         Name = "Saved configs",
         Options = self:ListConfigs(),
         Placeholder = "None saved",
-        Callback = selectionChanged,
+        Callback = function(v)
+            if type(v) == "string" then nameBox:Set(v, true) end
+            syncProfiles()
+        end,
     })
-    infoStat = cfg:Stat({ Name = "Selected", Value = "None selected", Icon = "file-text" })
     local function refresh(select)
         list:Refresh(self:ListConfigs(), true)
-        if select then list:Set(select, true) end
-        selectionChanged()
+        if select ~= nil then
+            list:Set(select or nil, true)
+            if select then nameBox:Set(select, true) end
+        end
+        syncProfiles()
     end
-    -- Imports from anywhere (Window:ImportAny) land in the list.
-    self._onConfigSaved = function(name) refresh(name) end
+    -- Imports from anywhere (Window:ImportAny) land in the list, selected.
+    self._onConfigSaved = function(name) refresh(name or false) end
 
-    -- Autoload options for the selected config, right under it.
     local autoPath = self.ConfigFolder .. "/autoload.txt"
     local function autoloadName()
         return canUseFiles() and isfile(autoPath) and readfile(autoPath) or nil
@@ -7029,15 +7057,9 @@ function Window:SettingsTab(opts)
     })
     syncProfiles = function()
         local name = selected()
-        if name then
-            autoToggle:SetName('Autoload "' .. name .. '"')
-            accountToggle:SetName("Autoload on this account")
-        else
-            autoToggle:SetName("Autoload")
-            accountToggle:SetName("Autoload on this account")
-        end
-        autoToggle:SetLocked(not name, "Pick a config")
-        accountToggle:SetLocked(not name, "Pick a config")
+        autoToggle:SetName(name and ('Autoload "' .. name .. '"') or "Autoload")
+        autoToggle:SetLocked(not name, "Pick a saved config")
+        accountToggle:SetLocked(not name, "Pick a saved config")
         autoToggle:Set(name ~= nil and autoloadName() == name, true)
         accountToggle:Set(name ~= nil and self:GetProfile("Account") == name, true)
     end
@@ -7053,6 +7075,33 @@ function Window:SettingsTab(opts)
             Prism:Notify({ Title = "Can't save", Content = "Your executor doesn't support file access.", Type = "Error" })
         end
     end
+    cfg:Button({
+        Name = "Save",
+        Icon = "save",
+        Style = "Primary",
+        Description = "Saves your current settings under the name in Config name.",
+        Callback = function()
+            local name = newName()
+            if not name then
+                Prism:Notify({ Title = "Name it first", Content = "Type a name in <b>Config name</b>.", Type = "Warning" })
+                return
+            end
+            if self:GetConfigInfo(name) then
+                Prism:Notify({
+                    Title = name .. " already exists",
+                    Content = "Overwrite it with your current settings?",
+                    Type = "Warning",
+                    Merge = false,
+                    Buttons = {
+                        { Name = "Overwrite", Primary = true, Callback = function() save(name, "overwritten") end },
+                        { Name = "Cancel" },
+                    },
+                })
+                return
+            end
+            save(name, "saved")
+        end,
+    })
     cfg:ButtonRow({
         {
             Name = "Load",
@@ -7061,7 +7110,6 @@ function Window:SettingsTab(opts)
                 local name = selected()
                 if not name then return needSelection() end
                 local ok = self:LoadConfig(name)
-                syncInfo()
                 Prism:Notify({
                     Title = ok and "Config loaded" or "Config not found",
                     Content = "<b>" .. name .. "</b>",
@@ -7092,66 +7140,25 @@ function Window:SettingsTab(opts)
                     if self.ActiveConfig == name then self.ActiveConfig = nil end
                     if autoloadName() == name and delfile then delfile(autoPath) end
                     if self:GetProfile("Account") == name then self:SetProfile("Account", nil) end
-                    list:Set(nil, true)
-                    refresh()
+                    nameBox:Set("", true)
+                    refresh(false)
                     Prism:Notify({ Title = "Config deleted", Content = "<b>" .. name .. "</b>", Type = "Warning" })
                 end
             end,
         },
     })
 
-    -- New config
-    cfg:Divider("New config")
-    local nameBox = cfg:Textbox({
-        Name = "Config name",
-        Placeholder = "Type a name...",
-    })
-    local function newName()
-        local v = nameBox.Value and string.gsub(nameBox.Value, "^%s*(.-)%s*$", "%1") or ""
-        return v ~= "" and v or nil
-    end
-    cfg:ButtonRow({
-        {
-            Name = "Save",
-            Icon = "save",
-            Style = "Primary",
-            Callback = function()
-                local name = newName()
-                if not name then
-                    Prism:Notify({ Title = "Name it first", Content = "Type a name for the new config.", Type = "Warning" })
-                    return
-                end
-                if self:GetConfigInfo(name) then
-                    Prism:Notify({
-                        Title = name .. " already exists",
-                        Content = "Overwrite it with your current settings?",
-                        Type = "Warning",
-                        Merge = false,
-                        Buttons = {
-                            { Name = "Overwrite", Primary = true, Callback = function() save(name, "overwritten") end },
-                            { Name = "Cancel" },
-                        },
-                    })
-                    return
-                end
-                save(name, "saved")
-                nameBox:Set("", true)
-            end,
-        },
-        { Name = "Refresh", Icon = "refresh-cw", Callback = function() refresh() end },
-    })
-
-    -- Sharing: copy a code, or paste one and press Import.
+    -- Sharing
     cfg:Divider("Sharing")
     cfg:Button({
-        Name = "Copy config code",
+        Name = "Copy current config code",
         Icon = "copy",
-        Description = "Your current settings (and the config's name) as one line of text.",
+        Description = "Your current settings as one line of text, named after the selected config.",
         Callback = function()
-            local code = self:GetConfigCode({ Name = selected() or self.ActiveConfig })
+            local code = self:GetConfigCode({ Name = selected() or newName() or self.ActiveConfig })
             if setclipboard then
                 setclipboard(code)
-                Prism:Notify({ Title = "Config code copied", Content = "Paste it into <b>Import</b> to use it.", Type = "Success" })
+                Prism:Notify({ Title = "Config code copied", Content = "Paste it into <b>Config code</b> and press Import.", Type = "Success" })
             else
                 Prism:Notify({ Title = "Can't copy", Content = "Your executor has no clipboard access.", Type = "Error" })
             end
@@ -7159,18 +7166,19 @@ function Window:SettingsTab(opts)
     })
     local importBox = cfg:Textbox({
         Name = "Config code",
-        Description = "Paste a config code, then press Import.",
+        Description = "Paste a config code here, then press Import.",
         Placeholder = Prism.ConfigCodePrefix .. ":...",
     })
     cfg:Button({
         Name = "Import",
         Icon = "download",
         Style = "Primary",
-        Description = "Applies the pasted code and adds it to Saved configs.",
+        Description = "Applies the pasted code and saves it into Saved configs.",
         Callback = function()
-            local text = importBox.Value or ""
+            -- Read the box itself: the value only commits when focus leaves it.
+            local text = importBox.Box and importBox.Box.Text or importBox.Value or ""
             if string.gsub(text, "%s", "") == "" then
-                Prism:Notify({ Title = "Nothing to import", Content = "Paste a config code into the box first.", Type = "Warning" })
+                Prism:Notify({ Title = "Nothing to import", Content = "Paste a config code into <b>Config code</b> first.", Type = "Warning" })
                 return
             end
             if self:ImportAny(text) then importBox:Set("", true) end
@@ -7213,7 +7221,7 @@ function Window:SettingsTab(opts)
         local isNew = not isfile(self.ConfigFolder .. "/" .. target .. ".json")
         if self:SaveConfig(target) then
             saveStat:Set(target .. "  ·  " .. os.date("%H:%M:%S"))
-            if isNew then refresh(target) else syncInfo() end
+            if isNew then refresh(target) end
         end
     end
     self._autoSaveFinal = autoSave
@@ -7288,12 +7296,12 @@ function Window:SettingsTab(opts)
     task.defer(function()
         if startName then
             list:Set(startName, true)
+            nameBox:Set(startName, true)
             if self:LoadConfig(startName) then
                 Prism:Notify({ Title = "Config loaded", Content = "<b>" .. startName .. "</b>  ·  " .. reason, Type = "Success" })
             end
         end
         syncProfiles()
-        syncInfo()
     end)
     return tab
 end
