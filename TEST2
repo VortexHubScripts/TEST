@@ -4690,7 +4690,8 @@ local function makeDraggable(handle, target, conns)
 end
 
 local SHADOW_TRANSPARENCY = 0.3
-local UNDERGLOW_TRANSPARENCY = 0.95
+-- The accent halo under the window is off (1 = invisible).
+local UNDERGLOW_TRANSPARENCY = 1
 local SIDEBAR, SIDEBAR_COMPACT, TOPBAR = 158, 52, 36
 
 -- Live FPS and ping, shared by the profile card and the watermark.
@@ -4737,7 +4738,7 @@ function Prism:CreateWindow(opts)
     self.ToggleKey = opts.ToggleKey or Enum.KeyCode.RightShift
     -- Configs live in <ConfigFolder>/<GameId> so every game keeps its own
     -- set. PerGameConfigs = false shares one folder across games.
-    self.ConfigFolder = opts.ConfigFolder or "Prism"
+    self.ConfigFolder = opts.ConfigFolder or opts.Folder or "Prism"
     if opts.PerGameConfigs ~= false then
         self.ConfigFolder = self.ConfigFolder .. "/" .. tostring(game.GameId)
     end
@@ -5289,8 +5290,8 @@ function Prism:CreateWindow(opts)
         Parent = main,
     })
 
-    -- Window rim: a hairline around the window, styled by SetBorderStyle.
-    -- Inset 1px because the CanvasGroup clips its own bounds.
+    -- Window rim: a faint hairline around the window, slightly brighter at
+    -- the top. Inset 1px because the CanvasGroup clips its own bounds.
     local rim = new("Frame", {
         Position = UDim2.fromOffset(1, 1),
         Size = UDim2.new(1, -2, 1, -2),
@@ -5298,10 +5299,17 @@ function Prism:CreateWindow(opts)
         ZIndex = 10,
         Parent = main,
     }, { corner(9) })
-    self._rimStroke = stroke(WHITE, 1, 0)
-    self._rimStroke.Parent = rim
-    self._rimGradient = new("UIGradient", { Rotation = 90, Parent = self._rimStroke })
-    self:SetBorderStyle(opts.BorderStyle or "Subtle")
+    local rimStroke = stroke(WHITE, 1, 0)
+    rimStroke.Parent = rim
+    new("UIGradient", {
+        Rotation = 90,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.9),
+            NumberSequenceKeypoint.new(0.2, 0.93),
+            NumberSequenceKeypoint.new(1, 0.95),
+        }),
+        Parent = rimStroke,
+    })
 
     -- Resize grip, bottom-right. The window grows down and right; its top-left
     -- corner stays put.
@@ -5380,7 +5388,10 @@ function Prism:CreateWindow(opts)
             self:CloseSearch()
             return
         end
-        if not processed and input.KeyCode == self.ToggleKey then
+        -- "processed" is ignored on purpose: shift lock and sprint scripts
+        -- sink Shift, which made RightShift (the default) do nothing.
+        if input.KeyCode == self.ToggleKey and not self._listener
+            and not UserInputService:GetFocusedTextBox() then
             self:SetVisible(not self.Visible)
         end
     end))
@@ -5554,16 +5565,8 @@ function Window:SetVisible(visible, viaPill)
         local time = fromPill and 0.45 or 0.38
         self:_reveal(time, fromPill and Enum.EasingStyle.Quint or style.Easing)
         tween(self.Root, time, { Position = rest }, Enum.EasingStyle.Quint)
-        if not reduce then
-            -- The accent glow swells briefly as the window lands, and the
-            -- page's columns rise in after it.
-            tween(self.Underglow, 0.22, { ImageTransparency = 0.8 }).Completed:Connect(function()
-                if token == self._animToken and self.Visible then
-                    tween(self.Underglow, 0.7, { ImageTransparency = UNDERGLOW_TRANSPARENCY })
-                end
-            end)
-            if self.ActiveTab then self.ActiveTab:_setActive(true) end
-        end
+        -- The page's columns rise in after the window lands.
+        if not reduce and self.ActiveTab then self.ActiveTab:_setActive(true) end
         settle(time + 0.05)
     else
         if self._searchOpen then self:CloseSearch() end
@@ -5666,52 +5669,6 @@ function Window:_applyBlur()
         blur = new("BlurEffect", { Name = "PrismMenuBlur", Size = 0, Parent = Lighting })
     end
     if blur then tween(blur, 0.3, { Size = want and 14 or 0 }) end
-end
-
--- Rim transparency top -> bottom for the static border styles.
-local BORDER_STYLES = {
-    Subtle = { 0.9, 0.93, 0.95 },
-    Glass  = { 0.8, 0.9, 0.93 },
-}
-
---  SetBorderStyle("Subtle" | "Glass" | "Accent" | "None")
---  Accent: two soft accent lights orbit the rim; still under ReduceMotion.
-function Window:SetBorderStyle(style)
-    local rimStroke, g = self._rimStroke, self._rimGradient
-    if not (rimStroke and rimStroke.Parent) then return end
-    self.BorderStyle = style
-    tickers[g] = nil
-    themeListeners[g] = nil
-    rimStroke.Transparency = style == "None" and 1 or 0
-    if style == "Accent" then
-        g.Color = accentSequence()
-        g.Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.9),
-            NumberSequenceKeypoint.new(0.4, 0.9),
-            NumberSequenceKeypoint.new(0.5, 0.3),
-            NumberSequenceKeypoint.new(0.6, 0.9),
-            NumberSequenceKeypoint.new(1, 0.9),
-        })
-        tickers[g] = function(t)
-            if not g.Parent then
-                tickers[g] = nil
-                return
-            end
-            if not Prism.ReduceMotion then g.Rotation = (t * 36) % 360 end
-        end
-        onThemeChanged(g, function()
-            if alive(g) then g.Color = accentSequence() else themeListeners[g] = nil end
-        end)
-    else
-        local k = BORDER_STYLES[style] or BORDER_STYLES.Subtle
-        g.Color = ColorSequence.new(WHITE)
-        g.Rotation = 90
-        g.Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, k[1]),
-            NumberSequenceKeypoint.new(0.2, k[2]),
-            NumberSequenceKeypoint.new(1, k[3]),
-        })
-    end
 end
 
 -- Window background opacity, 0..1. Lower values let the game show through
@@ -6734,30 +6691,28 @@ function Window:DeleteConfig(name)
     return false
 end
 
--- Profiles: a config bound to this place or this account loads on start,
--- ahead of the plain autoload. Place wins over account. Stored in
--- <ConfigFolder>/profiles.json as { Place = { [placeId] = name },
--- Account = { [userId] = name } }.
-local PROFILE_SCOPES = { Place = true, Account = true }
+-- Profiles: a config bound to this account loads on start, ahead of the
+-- plain autoload. Stored in <ConfigFolder>/profiles.json as
+-- { Account = { [userId] = name } }.
+local PROFILE_SCOPES = { Account = true }
 
-local function profileId(scope)
-    return scope == "Place" and tostring(game.PlaceId) or tostring(LocalPlayer.UserId)
+local function profileId()
+    return tostring(LocalPlayer.UserId)
 end
 
 function Window:_readProfiles()
-    local data = { Place = {}, Account = {} }
+    local data = { Account = {} }
     local path = self.ConfigFolder .. "/profiles.json"
     if canUseFiles() and isfile(path) then
         local ok, saved = pcall(HttpService.JSONDecode, HttpService, readfile(path))
         if ok and typeof(saved) == "table" then
-            data.Place = typeof(saved.Place) == "table" and saved.Place or {}
             data.Account = typeof(saved.Account) == "table" and saved.Account or {}
         end
     end
     return data
 end
 
---  Window:SetProfile("Place" | "Account", name)  -- name nil unbinds
+--  Window:SetProfile("Account", name)  -- name nil unbinds
 function Window:SetProfile(scope, name)
     if not (canUseFiles() and PROFILE_SCOPES[scope]) then return false end
     local data = self:_readProfiles()
@@ -6858,14 +6813,6 @@ function Window:SettingsTab(opts)
         Description = "Frosted-glass look while the menu is open.",
         Flag = "Prism_Blur",
         Callback = function(on) self:SetBlur(on) end,
-    })
-    look:Segmented({
-        Name = "Window border",
-        Description = "Accent: two soft lights orbit the window edge.",
-        Options = { "Subtle", "Glass", "Accent", "None" },
-        Default = self.BorderStyle or "Subtle",
-        Flag = "Prism_Border",
-        Callback = function(style) self:SetBorderStyle(style) end,
     })
 
     -- Behaviour -------------------------------------------------------------
@@ -6997,8 +6944,8 @@ function Window:SettingsTab(opts)
 
     -- Configs ---------------------------------------------------------------
     local cfg = tab:Section({ Name = "Configs", Icon = "save", Side = "Right" })
-    cfg:Stat({ Name = "Saving to", Value = self.ConfigFolder, Icon = "folder" })
-    local syncProfiles = function() end -- set once the profile toggles exist
+    cfg:Stat({ Name = "Folder", Value = self.ConfigFolder, Icon = "folder" })
+    local syncProfiles = function() end -- set once the startup toggles exist
     local infoStat
     local function current()
         local box = self._configNameBox
@@ -7015,14 +6962,15 @@ function Window:SettingsTab(opts)
                 .. (self.ActiveConfig == current() and "  ·  active" or ""))
         end
     end
+    local function selectionChanged()
+        syncProfiles()
+        syncInfo()
+    end
     local nameBox = cfg:Textbox({
         Name = "Config name",
         Placeholder = "default",
         Default = "default",
-        Callback = function()
-            syncProfiles()
-            syncInfo()
-        end,
+        Callback = selectionChanged,
     })
     self._configNameBox = nameBox
     local list = cfg:Dropdown({
@@ -7032,48 +6980,95 @@ function Window:SettingsTab(opts)
         Callback = function(v)
             if v then
                 nameBox:Set(v, true)
-                syncProfiles()
-                syncInfo()
+                selectionChanged()
             end
         end,
     })
     infoStat = cfg:Stat({ Name = "Selected", Value = "-", Icon = "file-text" })
+
+    -- Startup options for the selected config, right under it. Their names
+    -- follow the selected config so it's clear which one they apply to.
+    local autoPath = self.ConfigFolder .. "/autoload.txt"
+    local function autoloadName()
+        return canUseFiles() and isfile(autoPath) and readfile(autoPath) or nil
+    end
+    local autoToggle = cfg:Toggle({
+        Name = "Load on start",
+        HideFromList = true,
+        Description = "Loads this config every time the script runs, on any account.",
+        Callback = function(on)
+            if not canUseFiles() then return end
+            ensureFolder(self.ConfigFolder)
+            if on then
+                writefile(autoPath, current())
+            elseif delfile and isfile(autoPath) and readfile(autoPath) == current() then
+                delfile(autoPath)
+            end
+        end,
+    })
+    local accountToggle = cfg:Toggle({
+        Name = "Load for this account",
+        HideFromList = true,
+        Description = "Loads this config only when " .. LocalPlayer.Name .. " runs the script. Beats Load on start.",
+        Callback = function(on)
+            local config = current()
+            if on then
+                self:SetProfile("Account", config)
+            elseif self:GetProfile("Account") == config then
+                self:SetProfile("Account", nil)
+            end
+        end,
+    })
+    syncProfiles = function()
+        local name = current()
+        autoToggle:SetName('Autoload "' .. name .. '"')
+        accountToggle:SetName('Autoload "' .. name .. '" on this account')
+        autoToggle:Set(autoloadName() == name, true)
+        accountToggle:Set(self:GetProfile("Account") == name, true)
+    end
+
     local function refresh()
         list:Refresh(self:ListConfigs(), true)
         syncInfo()
     end
-
-    local function save(name)
+    local function save(name, verb)
         if self:SaveConfig(name) then
             refresh()
-            Prism:Notify({ Title = "Config saved", Content = "Saved as <b>" .. name .. "</b>.", Type = "Success" })
+            Prism:Notify({ Title = "Config " .. verb, Content = "<b>" .. name .. "</b>", Type = "Success" })
         else
             Prism:Notify({ Title = "Can't save", Content = "Your executor doesn't support file access.", Type = "Error" })
         end
     end
-    cfg:Button({
-        Name = "Save config",
-        Style = "Primary",
-        Icon = "save",
-        Callback = function()
-            local name = current()
-            -- Saving over a config that isn't the loaded one asks first.
-            if self.ActiveConfig ~= name and self:GetConfigInfo(name) then
-                Prism:Notify({
-                    Title = "Overwrite " .. name .. "?",
-                    Content = "A config with this name already exists.",
-                    Type = "Warning",
-                    Duration = 10,
-                    Merge = false,
-                    Buttons = {
-                        { Name = "Overwrite", Primary = true, Callback = function() save(name) end },
-                        { Name = "Cancel" },
-                    },
-                })
-                return
-            end
-            save(name)
-        end,
+    cfg:ButtonRow({
+        {
+            Name = "Save",
+            Icon = "save",
+            Style = "Primary",
+            Callback = function()
+                local name = current()
+                if self:GetConfigInfo(name) then
+                    Prism:Notify({
+                        Title = name .. " already exists",
+                        Content = "Use <b>Overwrite</b> to replace it, or type a new name.",
+                        Type = "Warning",
+                        Merge = false,
+                        Buttons = {
+                            { Name = "Overwrite", Primary = true, Callback = function() save(name, "overwritten") end },
+                            { Name = "Cancel" },
+                        },
+                    })
+                    return
+                end
+                save(name, "saved")
+            end,
+        },
+        {
+            Name = "Overwrite",
+            Icon = "file-text",
+            Confirm = true,
+            ConfirmText = "Click again",
+            Callback = function() save(current(), "overwritten") end,
+        },
     })
     cfg:ButtonRow({
         {
@@ -7095,68 +7090,39 @@ function Window:SettingsTab(opts)
             Hold = 1,
             HoldText = "Hold...",
             Callback = function()
-                if self:DeleteConfig(current()) then
-                    if self.ActiveConfig == current() then self.ActiveConfig = nil end
+                local name = current()
+                if self:DeleteConfig(name) then
+                    if self.ActiveConfig == name then self.ActiveConfig = nil end
+                    if autoloadName() == name and delfile then delfile(autoPath) end
+                    if self:GetProfile("Account") == name then self:SetProfile("Account", nil) end
                     refresh()
-                    Prism:Notify({ Title = "Config deleted", Content = "<b>" .. current() .. "</b>", Type = "Warning" })
+                    syncProfiles()
+                    Prism:Notify({ Title = "Config deleted", Content = "<b>" .. name .. "</b>", Type = "Warning" })
                 end
             end,
         },
         { Name = "Refresh", Icon = "refresh-cw", Callback = refresh },
     })
 
-    -- Sharing
+    -- Sharing: config codes only.
     cfg:Divider("Sharing")
-    cfg:ButtonRow({
-        {
-            Name = "Copy code",
-            Icon = "copy",
-            Callback = function()
-                local code = self:GetConfigCode()
-                if setclipboard then
-                    setclipboard(code)
-                    Prism:Notify({
-                        Title = "Config code copied",
-                        Content = #code .. " characters. Anyone can paste it into <b>Import</b>.",
-                        Type = "Success",
-                    })
-                else
-                    Prism:Notify({ Title = "Can't copy", Content = "Your executor has no clipboard access.", Type = "Error" })
-                end
-            end,
-        },
-        {
-            Name = "Share",
-            Icon = "upload",
-            Callback = function()
-                local toast = Prism:Notify({ Title = "Uploading...", Content = "Creating a share code.", Type = "Loading" })
-                task.spawn(function()
-                    local code, err = self:ShareConfig()
-                    if code then
-                        if setclipboard then setclipboard(code) end
-                        toast:Update({ Title = "Share code: " .. code, Content = "Copied. Friends paste it into <b>Import</b>.", Type = "Success", Duration = 8 })
-                    else
-                        toast:Update({ Title = "Couldn't share", Content = err or "Upload failed.", Type = "Error" })
-                    end
-                end)
-            end,
-        },
-        {
-            Name = "Export",
-            Icon = "file-text",
-            Callback = function()
-                if setclipboard then
-                    setclipboard(self:ExportConfig())
-                    Prism:Notify({ Title = "Config copied", Content = "Full config as JSON.", Type = "Success" })
-                else
-                    Prism:Notify({ Title = "Can't copy", Content = "Your executor has no clipboard access.", Type = "Error" })
-                end
-            end,
-        },
+    cfg:Button({
+        Name = "Copy config code",
+        Icon = "copy",
+        Description = "Your current settings as one line of text. Anyone can paste it into Import.",
+        Callback = function()
+            local code = self:GetConfigCode()
+            if setclipboard then
+                setclipboard(code)
+                Prism:Notify({ Title = "Config code copied", Content = "Paste it into <b>Import</b> to use it.", Type = "Success" })
+            else
+                Prism:Notify({ Title = "Can't copy", Content = "Your executor has no clipboard access.", Type = "Error" })
+            end
+        end,
     })
     cfg:Textbox({
         Name = "Import",
-        Description = "Paste a " .. Prism.ConfigCodePrefix .. ": code, a share code or an exported config, then press Enter.",
+        Description = "Paste a config code and press Enter.",
         Placeholder = Prism.ConfigCodePrefix .. ":...",
         ClearOnEnter = true,
         Callback = function(text)
@@ -7189,53 +7155,6 @@ function Window:SettingsTab(opts)
             })
         end,
     })
-
-    cfg:Divider("Startup")
-    -- Autoload and profiles. The toggles show whether the config named in
-    -- the box is the one that loads on start.
-    local autoPath = self.ConfigFolder .. "/autoload.txt"
-    local function autoloadName()
-        return canUseFiles() and isfile(autoPath) and readfile(autoPath) or nil
-    end
-    local autoToggle = cfg:Toggle({
-        Name = "Autoload this config",
-        HideFromList = true,
-        Description = "Loads it automatically next time.",
-        Callback = function(on)
-            if not canUseFiles() then return end
-            ensureFolder(self.ConfigFolder)
-            if on then
-                writefile(autoPath, current())
-            elseif delfile and isfile(autoPath) and readfile(autoPath) == current() then
-                delfile(autoPath)
-            end
-        end,
-    })
-    local function profileToggle(scope, name, description)
-        return cfg:Toggle({
-            Name = name,
-            HideFromList = true,
-            Description = description,
-            Callback = function(on)
-                local config = current()
-                if on then
-                    self:SetProfile(scope, config)
-                elseif self:GetProfile(scope) == config then
-                    self:SetProfile(scope, nil)
-                end
-            end,
-        })
-    end
-    local placeToggle = profileToggle("Place", "Load on this place",
-        "Loads this config whenever you join this place. Beats every other autoload.")
-    local accountToggle = profileToggle("Account", "Load on this account",
-        "Loads this config whenever " .. LocalPlayer.Name .. " runs the script, in any place of this game.")
-    syncProfiles = function()
-        local name = current()
-        autoToggle:Set(autoloadName() == name, true)
-        placeToggle:Set(self:GetProfile("Place") == name, true)
-        accountToggle:Set(self:GetProfile("Account") == name, true)
-    end
 
     -- Auto-save. Only writes over a config loaded or saved this session, so
     -- switching it on can't overwrite a saved config with fresh defaults.
@@ -7369,10 +7288,8 @@ function Window:SettingsTab(opts)
         Callback = function() self:Unload() end,
     })
 
-    -- Startup config: this place's profile, then this account's, then the
-    -- plain autoload.
-    local startName, reason = self:GetProfile("Place"), "bound to this place"
-    if not startName then startName, reason = self:GetProfile("Account"), "bound to your account" end
+    -- Startup config: this account's, then the plain autoload.
+    local startName, reason = self:GetProfile("Account"), "loads for your account"
     if not startName then startName, reason = autoloadName(), "autoload" end
     task.defer(function()
         if startName then
@@ -8710,65 +8627,6 @@ function Window:_buildHome()
 end
 
 -- ============================================================================
---  CLOUD CONFIG SHARING
--- ============================================================================
---  Window:ShareConfig() uploads the current config and returns a short
---  code; Window:ImportShared(code) downloads and applies one. Friends paste
---  the code into Settings -> Configs -> Import code.
---
---  Prism.CloudProvider decides where configs go. The default uses paste.rs
---  (no account needed). Swap it for your own backend:
---
---      Prism.CloudProvider = {
---          Upload   = function(text) ... return code end,
---          Download = function(code) ... return text end,
---      }
--- ============================================================================
-local function httpRequest(req)
-    local fn = (syn and syn.request) or http_request or request or (fluxus and fluxus.request)
-    if not fn then error("Your executor doesn't support HTTP requests.") end
-    return fn(req)
-end
-
-Prism.CloudProvider = {
-    Upload = function(text)
-        local res = httpRequest({ Url = "https://paste.rs/", Method = "POST", Body = text })
-        if not res or (res.StatusCode ~= 201 and res.StatusCode ~= 206) then
-            error("Upload failed (" .. tostring(res and res.StatusCode) .. ")")
-        end
-        return string.match(res.Body, "([%w]+)%s*$")
-    end,
-    Download = function(code)
-        local res = httpRequest({ Url = "https://paste.rs/" .. code, Method = "GET" })
-        if not res or res.StatusCode ~= 200 then
-            error("Code not found (" .. tostring(res and res.StatusCode) .. ")")
-        end
-        return res.Body
-    end,
-}
-
--- Shared configs carry a marker so random pastes are rejected.
-local SHARE_MARK = "prism-config:"
-
-function Window:ShareConfig()
-    local ok, code = pcall(Prism.CloudProvider.Upload, SHARE_MARK .. self:ExportConfig())
-    if ok and code then return code end
-    return nil, tostring(code)
-end
-
-function Window:ImportShared(code)
-    code = (code or ""):gsub("%s", ""):gsub("^.*/", "")
-    if code == "" then return false, "Enter a code." end
-    local ok, text = pcall(Prism.CloudProvider.Download, code)
-    if not ok then return false, tostring(text) end
-    if string.sub(text, 1, #SHARE_MARK) ~= SHARE_MARK then
-        return false, "That code isn't a Prism config."
-    end
-    if self:ImportConfig(string.sub(text, #SHARE_MARK + 1)) then return true end
-    return false, "That config couldn't be read."
-end
-
--- ============================================================================
 --  CONFIG CODES
 -- ============================================================================
 --  A config code is a whole config in one short line of plain text, no
@@ -9067,8 +8925,8 @@ function Window:ApplyConfigCode(code, opts)
     }
 end
 
--- Anything a user might paste: a config code, an exported config (JSON) or
--- a cloud share code. Shows the result as a toast with an Undo button.
+-- Anything a user might paste: a config code or an exported config (JSON).
+-- Shows the result as a toast with an Undo button.
 function Window:ImportAny(text)
     text = text or ""
     local code = Prism:IsConfigCode(text)
@@ -9101,15 +8959,12 @@ function Window:ImportAny(text)
         })
         return ok
     end
-    local before = serializeFlags()
-    local ok, err = self:ImportShared(trimmed)
     Prism:Notify({
-        Title = ok and "Config imported" or "Couldn't import",
-        Content = ok and "Shared settings applied." or (err or "Unknown code."),
-        Type = ok and "Success" or "Error",
-        Buttons = ok and { { Name = "Undo", Callback = function() applyFlags(before) end }, { Name = "Keep" } } or nil,
+        Title = "Couldn't import",
+        Content = "That isn't a config code. Codes start with <b>" .. Prism.ConfigCodePrefix .. ":</b>",
+        Type = "Error",
     })
-    return ok
+    return false
 end
 
 -- Resets every flag (not Prism's own interface settings) to its default.
