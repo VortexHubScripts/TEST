@@ -5272,27 +5272,36 @@ function Prism:CreateWindow(opts)
         Parent = main,
     })
 
-    -- Window rim: an edge line plus a dark inner line just inside it, so the
-    -- edge reads on light and dark backgrounds alike. Styled by
-    -- SetBorderStyle. Inset because the CanvasGroup clips its own bounds.
-    local rim = new("Frame", {
-        Position = UDim2.fromOffset(1, 1),
-        Size = UDim2.new(1, -2, 1, -2),
+    -- Window border. It lives outside the main CanvasGroup: drawn on the
+    -- canvas's own edge pixel, the rounded clip shaved it unevenly at the
+    -- corners. Here it wraps the window cleanly: a dark 2px line outside
+    -- for contrast on bright backgrounds, with the styled 1px edge on top.
+    -- Its own CanvasGroup (a bit larger than the window, so the strokes
+    -- aren't clipped) fades with the window via _attached.
+    local edge = new("CanvasGroup", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.new(1, 8, 1, 8),
         BackgroundTransparency = 1,
-        ZIndex = 10,
-        Parent = main,
-    }, { corner(9) })
+        ZIndex = 3,
+        Parent = root,
+    })
+    self._edge = edge
+    table.insert(self._attached, edge)
+    local function edgeFrame(z)
+        return new("Frame", {
+            Position = UDim2.fromOffset(4, 4),
+            Size = UDim2.new(1, -8, 1, -8),
+            BackgroundTransparency = 1,
+            ZIndex = z,
+            Parent = edge,
+        }, { corner(10) })
+    end
+    self._rimInner = stroke(Color3.new(0, 0, 0), 2, 0.5)
+    self._rimInner.Parent = edgeFrame(1)
     self._rimStroke = stroke(WHITE, 1, 0)
-    self._rimStroke.Parent = rim
+    self._rimStroke.Parent = edgeFrame(2)
     self._rimGradient = new("UIGradient", { Rotation = 90, Parent = self._rimStroke })
-    self._rimInner = stroke(Color3.new(0, 0, 0), 1, 0.45)
-    new("Frame", {
-        Position = UDim2.fromOffset(2, 2),
-        Size = UDim2.new(1, -4, 1, -4),
-        BackgroundTransparency = 1,
-        ZIndex = 10,
-        Parent = main,
-    }, { corner(8), self._rimInner })
     self:SetBorderStyle(opts.BorderStyle or "Clean")
 
     -- Resize grip, bottom-right. The window grows down and right; its top-left
@@ -5386,6 +5395,7 @@ function Prism:CreateWindow(opts)
 
     if useIntro then
         main.GroupTransparency = 1
+        self._edge.GroupTransparency = 1
         self.Shadow.ImageTransparency = 1
         self.Underglow.ImageTransparency = 1
         self.RootScale.Scale = self.BaseScale * 0.94
@@ -5659,44 +5669,66 @@ end
 --    "Clean"   light edge, brightest along the top (default)
 --    "Accent"  solid accent-gradient edge
 --    "Orbit"   accent edge with two bright lights circling it
+--    "Prism"   the logo's spectrum colours, slowly turning
+--    "Pulse"   accent edge that gently breathes
 --    "None"    no edge
+--  Animated styles hold still under ReduceMotion.
 local function rimSequence(points)
     local keys = {}
     for i, v in ipairs(points) do keys[i] = NumberSequenceKeypoint.new(v[1], v[2]) end
     return NumberSequence.new(keys)
 end
+Prism.BorderStyles = { "Clean", "Accent", "Orbit", "Prism", "Pulse", "None" }
 
 function Window:SetBorderStyle(style)
     local rimStroke, g = self._rimStroke, self._rimGradient
     if not (rimStroke and rimStroke.Parent) then return end
+    if not table.find(Prism.BorderStyles, style) then style = "Clean" end
     self.BorderStyle = style
     tickers[g] = nil
     themeListeners[g] = nil
     rimStroke.Transparency = style == "None" and 1 or 0
-    self._rimInner.Transparency = style == "None" and 1 or 0.45
-    if style == "Accent" or style == "Orbit" then
+    self._rimInner.Transparency = style == "None" and 1 or 0.5
+
+    local accent = style == "Accent" or style == "Orbit" or style == "Pulse"
+    if accent then
         g.Color = accentSequence()
         onThemeChanged(g, function()
             if alive(g) then g.Color = accentSequence() else themeListeners[g] = nil end
         end)
+    elseif style == "Prism" then
+        g.Color = spectrumSequence()
     else
         g.Color = ColorSequence.new(WHITE)
     end
-    if style == "Accent" then
-        g.Rotation = 45
-        g.Transparency = rimSequence({ { 0, 0.15 }, { 1, 0.35 } })
-    elseif style == "Orbit" then
-        g.Transparency = rimSequence({ { 0, 0.75 }, { 0.42, 0.75 }, { 0.5, 0 }, { 0.58, 0.75 }, { 1, 0.75 } })
+
+    local function animate(fn)
         tickers[g] = function(t)
             if not g.Parent then
                 tickers[g] = nil
                 return
             end
-            g.Rotation = Prism.ReduceMotion and 45 or (t * 40) % 360
+            fn(Prism.ReduceMotion and 0 or t)
         end
+    end
+    if style == "Accent" then
+        g.Rotation = 45
+        g.Transparency = rimSequence({ { 0, 0.1 }, { 1, 0.3 } })
+    elseif style == "Orbit" then
+        g.Transparency = rimSequence({ { 0, 0.7 }, { 0.42, 0.7 }, { 0.5, 0 }, { 0.58, 0.7 }, { 1, 0.7 } })
+        animate(function(t) g.Rotation = 45 + (t * 40) % 360 end)
+    elseif style == "Prism" then
+        g.Transparency = rimSequence({ { 0, 0.1 }, { 1, 0.1 } })
+        animate(function(t) g.Rotation = 45 + (t * 25) % 360 end)
+    elseif style == "Pulse" then
+        g.Rotation = 45
+        g.Transparency = rimSequence({ { 0, 0 }, { 1, 0.2 } })
+        animate(function(t)
+            rimStroke.Transparency = t == 0 and 0.2 or 0.25 + 0.3 * math.sin(t * 2.4)
+        end)
     else
         g.Rotation = 90
-        g.Transparency = rimSequence({ { 0, 0.55 }, { 0.25, 0.75 }, { 1, 0.8 } })
+        g.Transparency = rimSequence({ { 0, 0.5 }, { 0.25, 0.72 }, { 1, 0.78 } })
     end
 end
 
@@ -6659,6 +6691,24 @@ local function applyFlags(data)
     end
 end
 
+-- How many settings differ between two serializeFlags() snapshots.
+local function countChanges(before, after)
+    local n = 0
+    for k, v in pairs(after) do
+        if HttpService:JSONEncode({ v }) ~= HttpService:JSONEncode({ before[k] }) then n += 1 end
+    end
+    for k in pairs(before) do
+        if after[k] == nil then n += 1 end
+    end
+    return n
+end
+
+-- "3 settings changed", "1 setting changed", "nothing changed".
+local function changesText(n)
+    if n == 0 then return "nothing changed" end
+    return n .. (n == 1 and " setting changed" or " settings changed")
+end
+
 function Window:SaveConfig(name)
     if not canUseFiles() then return false end
     ensureFolder(self.ConfigFolder)
@@ -6697,10 +6747,12 @@ function Window:LoadConfig(name)
     if not isfile(path) then return false end
     local ok, data = pcall(HttpService.JSONDecode, HttpService, readfile(path))
     if not ok then return false end
+    local before = serializeFlags()
     applyFlags(data)
     self.ActiveConfig = name
     task.defer(function() self:_reportKeyConflicts() end)
-    return true
+    -- Second value: how many settings actually changed.
+    return true, countChanges(before, serializeFlags())
 end
 
 function Window:ExportConfig()
@@ -6845,8 +6897,8 @@ function Window:SettingsTab(opts)
     })
     look:Dropdown({
         Name = "Window border",
-        Description = "Clean: light edge. Accent: accent-coloured edge. Orbit: lights circle the edge.",
-        Options = { "Clean", "Accent", "Orbit", "None" },
+        Description = "Clean: light edge. Accent: accent colour. Orbit: lights circle it. Prism: spectrum colours. Pulse: breathing accent.",
+        Options = Prism.BorderStyles,
         Default = self.BorderStyle or "Clean",
         Flag = "Prism_Border",
         Callback = function(style) if style then self:SetBorderStyle(style) end end,
@@ -7026,13 +7078,20 @@ function Window:SettingsTab(opts)
     local function autoloadName()
         return canUseFiles() and isfile(autoPath) and readfile(autoPath) or nil
     end
-    local autoToggle = cfg:Toggle({
+    -- Flipping one with no config picked snaps it back with a hint.
+    local autoToggle, accountToggle
+    local function noneSelected(toggle)
+        task.defer(function() toggle:Set(false, true) end)
+        Prism:Notify({ Title = "No config selected", Content = "Pick one in <b>Saved configs</b> first.", Type = "Warning" })
+    end
+    autoToggle = cfg:Toggle({
         Name = "Autoload",
         HideFromList = true,
         Description = "Loads the selected config every time the script runs, on any account.",
         Callback = function(on)
             local name = selected()
-            if not (name and canUseFiles()) then return end
+            if not name then return on and noneSelected(autoToggle) end
+            if not canUseFiles() then return end
             ensureFolder(self.ConfigFolder)
             if on then
                 writefile(autoPath, name)
@@ -7041,13 +7100,13 @@ function Window:SettingsTab(opts)
             end
         end,
     })
-    local accountToggle = cfg:Toggle({
+    accountToggle = cfg:Toggle({
         Name = "Autoload on this account",
         HideFromList = true,
         Description = "Loads the selected config only when " .. LocalPlayer.Name .. " runs the script. Beats the plain autoload.",
         Callback = function(on)
             local name = selected()
-            if not name then return end
+            if not name then return on and noneSelected(accountToggle) end
             if on then
                 self:SetProfile("Account", name)
             elseif self:GetProfile("Account") == name then
@@ -7058,8 +7117,6 @@ function Window:SettingsTab(opts)
     syncProfiles = function()
         local name = selected()
         autoToggle:SetName(name and ('Autoload "' .. name .. '"') or "Autoload")
-        autoToggle:SetLocked(not name, "Pick a saved config")
-        accountToggle:SetLocked(not name, "Pick a saved config")
         autoToggle:Set(name ~= nil and autoloadName() == name, true)
         accountToggle:Set(name ~= nil and self:GetProfile("Account") == name, true)
     end
@@ -7109,10 +7166,10 @@ function Window:SettingsTab(opts)
             Callback = function()
                 local name = selected()
                 if not name then return needSelection() end
-                local ok = self:LoadConfig(name)
+                local ok, changed = self:LoadConfig(name)
                 Prism:Notify({
                     Title = ok and "Config loaded" or "Config not found",
-                    Content = "<b>" .. name .. "</b>",
+                    Content = "<b>" .. name .. "</b>" .. (ok and ("  ·  " .. changesText(changed)) or ""),
                     Type = ok and "Success" or "Warning",
                 })
             end,
@@ -7297,8 +7354,13 @@ function Window:SettingsTab(opts)
         if startName then
             list:Set(startName, true)
             nameBox:Set(startName, true)
-            if self:LoadConfig(startName) then
-                Prism:Notify({ Title = "Config loaded", Content = "<b>" .. startName .. "</b>  ·  " .. reason, Type = "Success" })
+            local ok, changed = self:LoadConfig(startName)
+            if ok then
+                Prism:Notify({
+                    Title = "Config loaded",
+                    Content = "<b>" .. startName .. "</b>  ·  " .. reason .. "\n" .. changesText(changed),
+                    Type = "Success",
+                })
             end
         end
         syncProfiles()
@@ -7634,6 +7696,7 @@ end
 
 function Window:Destroy()
     tween(self.Main, 0.25, { GroupTransparency = 1 })
+    if self._edge then tween(self._edge, 0.25, { GroupTransparency = 1 }) end
     tween(self.Shadow, 0.25, { ImageTransparency = 1 })
     tween(self.Underglow, 0.25, { ImageTransparency = 1 })
     tween(self.RootScale, 0.25, { Scale = self.BaseScale * 0.9 }).Completed:Wait()
@@ -8932,6 +8995,7 @@ function Window:ApplyConfigCode(code, opts)
     return true, {
         Name = name,
         Count = count,
+        Changed = countChanges(before, serializeFlags()),
         OtherGame = otherGame,
         Undo = function() applyFlags(before) end,
     }
@@ -8975,7 +9039,7 @@ function Window:ImportAny(text)
             })
             return false
         end
-        info = { OtherGame = false }
+        info = { OtherGame = false, Changed = countChanges(before, serializeFlags()) }
     end
 
     local name = self:_freeConfigName(codeName)
@@ -8983,7 +9047,8 @@ function Window:ImportAny(text)
     if saved and self._onConfigSaved then self._onConfigSaved(name) end
     Prism:Notify({
         Title = saved and ('Imported "' .. name .. '"') or "Config applied",
-        Content = (saved and "Saved to your configs and loaded." or "Applied (this executor can't save files).")
+        Content = (saved and ("Saved as <b>" .. name .. "</b>  ·  ") or "Applied (can't save files here)  ·  ")
+            .. changesText(info.Changed or 0)
             .. (info.OtherGame and "\n<b>Heads up:</b> this code was made in a different game." or ""),
         Type = info.OtherGame and "Warning" or "Success",
         Duration = 8,
