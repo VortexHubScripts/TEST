@@ -5290,8 +5290,10 @@ function Prism:CreateWindow(opts)
         Parent = main,
     })
 
-    -- Window rim: a faint hairline around the window, slightly brighter at
-    -- the top. Inset 1px because the CanvasGroup clips its own bounds.
+    -- Window rim: a clear light edge around the window, brightest along the
+    -- top, plus a dark inner line just inside it so the edge reads on light
+    -- and dark backgrounds alike. Inset because the CanvasGroup clips its
+    -- own bounds.
     local rim = new("Frame", {
         Position = UDim2.fromOffset(1, 1),
         Size = UDim2.new(1, -2, 1, -2),
@@ -5304,12 +5306,19 @@ function Prism:CreateWindow(opts)
     new("UIGradient", {
         Rotation = 90,
         Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.9),
-            NumberSequenceKeypoint.new(0.2, 0.93),
-            NumberSequenceKeypoint.new(1, 0.95),
+            NumberSequenceKeypoint.new(0, 0.55),
+            NumberSequenceKeypoint.new(0.25, 0.75),
+            NumberSequenceKeypoint.new(1, 0.8),
         }),
         Parent = rimStroke,
     })
+    new("Frame", {
+        Position = UDim2.fromOffset(2, 2),
+        Size = UDim2.new(1, -4, 1, -4),
+        BackgroundTransparency = 1,
+        ZIndex = 10,
+        Parent = main,
+    }, { corner(8), stroke(Color3.new(0, 0, 0), 1, 0.45) })
 
     -- Resize grip, bottom-right. The window grows down and right; its top-left
     -- corner stays put.
@@ -6656,7 +6665,7 @@ end
 
 local function timeAgo(t)
     local d = os.time() - t
-    if d < 60 then return "just now" end
+    if d < 60 then return "now" end
     if d < 3600 then return (d // 60) .. " min ago" end
     if d < 86400 then return (d // 3600) .. " h ago" end
     return (d // 86400) .. " d ago"
@@ -6945,95 +6954,100 @@ function Window:SettingsTab(opts)
     -- Configs ---------------------------------------------------------------
     local cfg = tab:Section({ Name = "Configs", Icon = "save", Side = "Right" })
     cfg:Stat({ Name = "Folder", Value = self.ConfigFolder, Icon = "folder" })
-    local syncProfiles = function() end -- set once the startup toggles exist
-    local infoStat
-    local function current()
-        local box = self._configNameBox
-        return (box and box.Value ~= "" and box.Value) or "default"
+
+    -- Everything at the top acts on the config picked in Saved configs.
+    -- The name box further down is only for saving a new one, so typing a
+    -- name never touches autoload.
+    local syncProfiles = function() end -- set once the autoload toggles exist
+    local list, infoStat
+    local function selected()
+        local v = list and list.Value
+        return type(v) == "string" and v ~= "" and v or nil
     end
-    -- Shows when the named config was saved and how many settings it holds.
     local function syncInfo()
         if not infoStat then return end
-        local info = self:GetConfigInfo(current())
+        local name = selected()
+        local info = name and self:GetConfigInfo(name)
         if not info then
-            infoStat:Set("Not saved yet")
+            infoStat:Set("None selected")
         else
-            infoStat:Set((info.Saved and timeAgo(info.Saved) or "saved") .. "  ·  " .. info.Settings .. " settings"
-                .. (self.ActiveConfig == current() and "  ·  active" or ""))
+            infoStat:Set(info.Settings .. " settings" .. (info.Saved and ("  ·  " .. timeAgo(info.Saved)) or ""))
         end
     end
     local function selectionChanged()
         syncProfiles()
         syncInfo()
     end
-    local nameBox = cfg:Textbox({
-        Name = "Config name",
-        Placeholder = "default",
-        Default = "default",
-        Callback = selectionChanged,
-    })
-    self._configNameBox = nameBox
-    local list = cfg:Dropdown({
+    list = cfg:Dropdown({
         Name = "Saved configs",
         Options = self:ListConfigs(),
         Placeholder = "None saved",
-        Callback = function(v)
-            if v then
-                nameBox:Set(v, true)
-                selectionChanged()
-            end
-        end,
+        Callback = selectionChanged,
     })
-    infoStat = cfg:Stat({ Name = "Selected", Value = "-", Icon = "file-text" })
+    infoStat = cfg:Stat({ Name = "Selected", Value = "None selected", Icon = "file-text" })
+    local function refresh(select)
+        list:Refresh(self:ListConfigs(), true)
+        if select then list:Set(select, true) end
+        selectionChanged()
+    end
+    -- Imports from anywhere (Window:ImportAny) land in the list.
+    self._onConfigSaved = function(name) refresh(name) end
 
-    -- Startup options for the selected config, right under it. Their names
-    -- follow the selected config so it's clear which one they apply to.
+    -- Autoload options for the selected config, right under it.
     local autoPath = self.ConfigFolder .. "/autoload.txt"
     local function autoloadName()
         return canUseFiles() and isfile(autoPath) and readfile(autoPath) or nil
     end
     local autoToggle = cfg:Toggle({
-        Name = "Load on start",
+        Name = "Autoload",
         HideFromList = true,
-        Description = "Loads this config every time the script runs, on any account.",
+        Description = "Loads the selected config every time the script runs, on any account.",
         Callback = function(on)
-            if not canUseFiles() then return end
+            local name = selected()
+            if not (name and canUseFiles()) then return end
             ensureFolder(self.ConfigFolder)
             if on then
-                writefile(autoPath, current())
-            elseif delfile and isfile(autoPath) and readfile(autoPath) == current() then
+                writefile(autoPath, name)
+            elseif delfile and isfile(autoPath) and readfile(autoPath) == name then
                 delfile(autoPath)
             end
         end,
     })
     local accountToggle = cfg:Toggle({
-        Name = "Load for this account",
+        Name = "Autoload on this account",
         HideFromList = true,
-        Description = "Loads this config only when " .. LocalPlayer.Name .. " runs the script. Beats Load on start.",
+        Description = "Loads the selected config only when " .. LocalPlayer.Name .. " runs the script. Beats the plain autoload.",
         Callback = function(on)
-            local config = current()
+            local name = selected()
+            if not name then return end
             if on then
-                self:SetProfile("Account", config)
-            elseif self:GetProfile("Account") == config then
+                self:SetProfile("Account", name)
+            elseif self:GetProfile("Account") == name then
                 self:SetProfile("Account", nil)
             end
         end,
     })
     syncProfiles = function()
-        local name = current()
-        autoToggle:SetName('Autoload "' .. name .. '"')
-        accountToggle:SetName('Autoload "' .. name .. '" on this account')
-        autoToggle:Set(autoloadName() == name, true)
-        accountToggle:Set(self:GetProfile("Account") == name, true)
+        local name = selected()
+        if name then
+            autoToggle:SetName('Autoload "' .. name .. '"')
+            accountToggle:SetName("Autoload on this account")
+        else
+            autoToggle:SetName("Autoload")
+            accountToggle:SetName("Autoload on this account")
+        end
+        autoToggle:SetLocked(not name, "Pick a config")
+        accountToggle:SetLocked(not name, "Pick a config")
+        autoToggle:Set(name ~= nil and autoloadName() == name, true)
+        accountToggle:Set(name ~= nil and self:GetProfile("Account") == name, true)
     end
 
-    local function refresh()
-        list:Refresh(self:ListConfigs(), true)
-        syncInfo()
+    local function needSelection()
+        Prism:Notify({ Title = "No config selected", Content = "Pick one in <b>Saved configs</b> first.", Type = "Warning" })
     end
     local function save(name, verb)
         if self:SaveConfig(name) then
-            refresh()
+            refresh(name)
             Prism:Notify({ Title = "Config " .. verb, Content = "<b>" .. name .. "</b>", Type = "Success" })
         else
             Prism:Notify({ Title = "Can't save", Content = "Your executor doesn't support file access.", Type = "Error" })
@@ -7041,15 +7055,76 @@ function Window:SettingsTab(opts)
     end
     cfg:ButtonRow({
         {
+            Name = "Load",
+            Icon = "folder-open",
+            Callback = function()
+                local name = selected()
+                if not name then return needSelection() end
+                local ok = self:LoadConfig(name)
+                syncInfo()
+                Prism:Notify({
+                    Title = ok and "Config loaded" or "Config not found",
+                    Content = "<b>" .. name .. "</b>",
+                    Type = ok and "Success" or "Warning",
+                })
+            end,
+        },
+        {
+            Name = "Overwrite",
+            Icon = "file-text",
+            Confirm = true,
+            ConfirmText = "Click again",
+            Callback = function()
+                local name = selected()
+                if not name then return needSelection() end
+                save(name, "overwritten")
+            end,
+        },
+        {
+            Name = "Delete",
+            Icon = "trash-2",
+            Hold = 1,
+            HoldText = "Hold...",
+            Callback = function()
+                local name = selected()
+                if not name then return needSelection() end
+                if self:DeleteConfig(name) then
+                    if self.ActiveConfig == name then self.ActiveConfig = nil end
+                    if autoloadName() == name and delfile then delfile(autoPath) end
+                    if self:GetProfile("Account") == name then self:SetProfile("Account", nil) end
+                    list:Set(nil, true)
+                    refresh()
+                    Prism:Notify({ Title = "Config deleted", Content = "<b>" .. name .. "</b>", Type = "Warning" })
+                end
+            end,
+        },
+    })
+
+    -- New config
+    cfg:Divider("New config")
+    local nameBox = cfg:Textbox({
+        Name = "Config name",
+        Placeholder = "Type a name...",
+    })
+    local function newName()
+        local v = nameBox.Value and string.gsub(nameBox.Value, "^%s*(.-)%s*$", "%1") or ""
+        return v ~= "" and v or nil
+    end
+    cfg:ButtonRow({
+        {
             Name = "Save",
             Icon = "save",
             Style = "Primary",
             Callback = function()
-                local name = current()
+                local name = newName()
+                if not name then
+                    Prism:Notify({ Title = "Name it first", Content = "Type a name for the new config.", Type = "Warning" })
+                    return
+                end
                 if self:GetConfigInfo(name) then
                     Prism:Notify({
                         Title = name .. " already exists",
-                        Content = "Use <b>Overwrite</b> to replace it, or type a new name.",
+                        Content = "Overwrite it with your current settings?",
                         Type = "Warning",
                         Merge = false,
                         Buttons = {
@@ -7060,58 +7135,20 @@ function Window:SettingsTab(opts)
                     return
                 end
                 save(name, "saved")
+                nameBox:Set("", true)
             end,
         },
-        {
-            Name = "Overwrite",
-            Icon = "file-text",
-            Confirm = true,
-            ConfirmText = "Click again",
-            Callback = function() save(current(), "overwritten") end,
-        },
-    })
-    cfg:ButtonRow({
-        {
-            Name = "Load",
-            Icon = "folder-open",
-            Callback = function()
-                local ok = self:LoadConfig(current())
-                syncInfo()
-                Prism:Notify({
-                    Title = ok and "Config loaded" or "Config not found",
-                    Content = "<b>" .. current() .. "</b>",
-                    Type = ok and "Success" or "Warning",
-                })
-            end,
-        },
-        {
-            Name = "Delete",
-            Icon = "trash-2",
-            Hold = 1,
-            HoldText = "Hold...",
-            Callback = function()
-                local name = current()
-                if self:DeleteConfig(name) then
-                    if self.ActiveConfig == name then self.ActiveConfig = nil end
-                    if autoloadName() == name and delfile then delfile(autoPath) end
-                    if self:GetProfile("Account") == name then self:SetProfile("Account", nil) end
-                    refresh()
-                    syncProfiles()
-                    Prism:Notify({ Title = "Config deleted", Content = "<b>" .. name .. "</b>", Type = "Warning" })
-                end
-            end,
-        },
-        { Name = "Refresh", Icon = "refresh-cw", Callback = refresh },
+        { Name = "Refresh", Icon = "refresh-cw", Callback = function() refresh() end },
     })
 
-    -- Sharing: config codes only.
+    -- Sharing: copy a code, or paste one and press Import.
     cfg:Divider("Sharing")
     cfg:Button({
         Name = "Copy config code",
         Icon = "copy",
-        Description = "Your current settings as one line of text. Anyone can paste it into Import.",
+        Description = "Your current settings (and the config's name) as one line of text.",
         Callback = function()
-            local code = self:GetConfigCode()
+            local code = self:GetConfigCode({ Name = selected() or self.ActiveConfig })
             if setclipboard then
                 setclipboard(code)
                 Prism:Notify({ Title = "Config code copied", Content = "Paste it into <b>Import</b> to use it.", Type = "Success" })
@@ -7120,39 +7157,23 @@ function Window:SettingsTab(opts)
             end
         end,
     })
-    cfg:Textbox({
-        Name = "Import",
-        Description = "Paste a config code and press Enter.",
+    local importBox = cfg:Textbox({
+        Name = "Config code",
+        Description = "Paste a config code, then press Import.",
         Placeholder = Prism.ConfigCodePrefix .. ":...",
-        ClearOnEnter = true,
-        Callback = function(text)
-            if text == "" then return end
-            self:ImportAny(text)
-            syncInfo()
-        end,
     })
-    cfg:Toggle({
-        Name = "Detect codes in chat",
-        HideFromList = true,
-        Description = "When anyone posts a config code in chat, offers to apply it.",
-        Default = true,
-        Flag = "Prism_ChatCodes",
-        Callback = function(on) self.ChatCodes = on end,
-    })
-    self:_watchChatCodes()
     cfg:Button({
-        Name = "Reset to defaults",
-        Icon = "rotate-ccw",
-        Hold = 1,
-        HoldText = "Hold to reset...",
+        Name = "Import",
+        Icon = "download",
+        Style = "Primary",
+        Description = "Applies the pasted code and adds it to Saved configs.",
         Callback = function()
-            local undo = self:ResetConfig()
-            Prism:Notify({
-                Title = "Settings reset",
-                Content = "Every feature is back to its default.",
-                Type = "Warning",
-                Buttons = { { Name = "Undo", Callback = undo }, { Name = "Keep" } },
-            })
+            local text = importBox.Value or ""
+            if string.gsub(text, "%s", "") == "" then
+                Prism:Notify({ Title = "Nothing to import", Content = "Paste a config code into the box first.", Type = "Warning" })
+                return
+            end
+            if self:ImportAny(text) then importBox:Set("", true) end
         end,
     })
 
@@ -7169,7 +7190,7 @@ function Window:SettingsTab(opts)
         if snap == lastSnapshot then return end
         local target = self.ActiveConfig
         if not target then
-            local name = current()
+            local name = selected() or "autosave"
             if isfile(self.ConfigFolder .. "/" .. name .. ".json") then
                 if not warnedOverwrite then
                     warnedOverwrite = true
@@ -7192,7 +7213,7 @@ function Window:SettingsTab(opts)
         local isNew = not isfile(self.ConfigFolder .. "/" .. target .. ".json")
         if self:SaveConfig(target) then
             saveStat:Set(target .. "  ·  " .. os.date("%H:%M:%S"))
-            if isNew then refresh() else syncInfo() end
+            if isNew then refresh(target) else syncInfo() end
         end
     end
     self._autoSaveFinal = autoSave
@@ -7223,33 +7244,6 @@ function Window:SettingsTab(opts)
         while self.Gui.Parent and not self._unloaded do
             pcall(autoSave)
             task.wait(2)
-        end
-    end)
-
-    -- Info ------------------------------------------------------------------
-    local info = tab:Section({ Name = "Info", Icon = "info", Side = "Right" })
-    info:Stat({ Name = "Version", Value = "v" .. Prism.Version, Icon = "gem" })
-    local executor = "Unknown"
-    pcall(function() executor = identifyexecutor and (identifyexecutor()) or executor end)
-    info:Stat({ Name = "Executor", Value = executor, Icon = "terminal" })
-    local gameStat = info:Stat({ Name = "Game", Value = "...", Icon = "gamepad-2" })
-    task.spawn(function()
-        local ok, product = pcall(function()
-            return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
-        end)
-        gameStat:Set(ok and product and product.Name or tostring(game.PlaceId))
-    end)
-    local playersStat = info:Stat({ Name = "Players", Icon = "users" })
-    local perfStat = info:Stat({ Name = "Performance", Icon = "activity" })
-    local sessionStat = info:Stat({ Name = "Session", Icon = "clock" })
-    local started = os.clock()
-    task.spawn(function()
-        while self.Gui.Parent do
-            playersStat:Set(#Players:GetPlayers() .. " / " .. Players.MaxPlayers)
-            perfStat:Set(stats.FPS .. " fps  ·  " .. stats.Ping .. " ms")
-            local t = math.floor(os.clock() - started)
-            sessionStat:Set(string.format("%02d:%02d:%02d", t // 3600, t // 60 % 60, t % 60))
-            task.wait(1)
         end
     end)
 
@@ -7293,7 +7287,7 @@ function Window:SettingsTab(opts)
     if not startName then startName, reason = autoloadName(), "autoload" end
     task.defer(function()
         if startName then
-            nameBox:Set(startName, true)
+            list:Set(startName, true)
             if self:LoadConfig(startName) then
                 Prism:Notify({ Title = "Config loaded", Content = "<b>" .. startName .. "</b>  ·  " .. reason, Type = "Success" })
             end
@@ -8634,8 +8628,9 @@ end
 --
 --      prismhub:AbX3k9Q2mPfaR1...
 --
---  Paste it into Settings -> Configs -> Import (or anywhere in a chat
---  message, if chat detection is on) and Prism knows what it is.
+--  Paste it into Settings -> Configs -> Config code and press Import:
+--  the settings are applied and saved into Saved configs under the name
+--  the code carries.
 --
 --  Only settings that differ from their defaults are stored, keyed by a
 --  short hash of the flag name, so codes stay small. Applying a code sets
@@ -8652,7 +8647,7 @@ end
 --  Prism:IsConfigCode(text) -> the code found in text, or nil
 -- ============================================================================
 Prism.ConfigCodePrefix = "prismhub"
-local CODE_VERSION = "A"
+local CODE_VERSION = "B" -- "A" codes (no name) still import
 local B62 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 local B62_INDEX = {}
 for i = 1, #B62 do B62_INDEX[string.sub(B62, i, i)] = i - 1 end
@@ -8846,7 +8841,8 @@ function Window:GetConfigCode(opts)
             end
         end
     end
-    local body = table.concat(parts)
+    -- The config's name rides along so an import lands under the same name.
+    local body = codeString(opts.Name or self.ActiveConfig or "config") .. table.concat(parts)
     local game2 = b62(hash(tostring(game.GameId), 3844), 2)
     local check = b62(hash(body, 3844), 2)
     return Prism.ConfigCodePrefix .. ":" .. CODE_VERSION .. game2 .. check .. body
@@ -8867,7 +8863,8 @@ local function decodeConfigCode(code, includeInterface)
     local found = Prism:IsConfigCode(code)
     if not found then error("That isn't a " .. Prism.ConfigCodePrefix .. " config code.", 0) end
     local payload = string.sub(found, #Prism.ConfigCodePrefix + 2)
-    if string.sub(payload, 1, 1) ~= CODE_VERSION then
+    local version = string.sub(payload, 1, 1)
+    if version ~= "A" and version ~= "B" then
         error("This code is from a newer version of the script.", 0)
     end
     local gameHash, check, body = string.sub(payload, 2, 3), string.sub(payload, 4, 5), string.sub(payload, 6)
@@ -8880,6 +8877,12 @@ local function decodeConfigCode(code, includeInterface)
         byHash[flagHash(flag .. "::key")] = flag .. "::key"
     end
     local r = reader(body)
+    local name
+    if version == "B" then
+        local ok, n = pcall(r.string)
+        if not ok then error("This code is damaged or incomplete. Copy the whole line.", 0) end
+        name = n
+    end
     local data, count = {}, 0
     while not r.done() do
         local h = r.digits(2)
@@ -8891,12 +8894,12 @@ local function decodeConfigCode(code, includeInterface)
             count += 1
         end
     end
-    return data, count, gameHash ~= b62(hash(tostring(game.GameId), 3844), 2)
+    return data, count, gameHash ~= b62(hash(tostring(game.GameId), 3844), 2), name
 end
 
 function Window:ApplyConfigCode(code, opts)
     opts = opts or {}
-    local ok, data, count, otherGame = pcall(decodeConfigCode, code, opts.IncludeInterface)
+    local ok, data, count, otherGame, name = pcall(decodeConfigCode, code, opts.IncludeInterface)
     if not ok then return false, tostring(data) end
     local before = serializeFlags()
     for flag, el in pairs(codeFlags(opts.IncludeInterface)) do
@@ -8919,52 +8922,79 @@ function Window:ApplyConfigCode(code, opts)
     end
     task.defer(function() self:_reportKeyConflicts() end)
     return true, {
+        Name = name,
         Count = count,
         OtherGame = otherGame,
         Undo = function() applyFlags(before) end,
     }
 end
 
+-- A free config name based on want: "name", then "name 2", "name 3"...
+function Window:_freeConfigName(want)
+    local base = string.gsub(tostring(want or ""), "[^%w%s%-_%.]", "")
+    base = string.gsub(base, "^%s*(.-)%s*$", "%1")
+    if base == "" then base = "imported" end
+    local name, n = base, 1
+    while self:GetConfigInfo(name) do
+        n += 1
+        name = base .. " " .. n
+    end
+    return name
+end
+
 -- Anything a user might paste: a config code or an exported config (JSON).
--- Shows the result as a toast with an Undo button.
+-- The settings are applied and saved into Saved configs under the code's
+-- name (or "imported"), and a toast offers Undo.
 function Window:ImportAny(text)
     text = text or ""
+    local before = serializeFlags()
+    local ok, info, codeName
     local code = Prism:IsConfigCode(text)
     if code then
-        local ok, info = self:ApplyConfigCode(code)
+        ok, info = self:ApplyConfigCode(code)
         if not ok then
             Prism:Notify({ Title = "Couldn't import", Content = info, Type = "Error" })
             return false
         end
-        Prism:Notify({
-            Title = "Config code applied",
-            Content = (info.Count == 0 and "Everything reset to defaults."
-                or string.format("%d setting%s changed from default.", info.Count, info.Count == 1 and "" or "s"))
-                .. (info.OtherGame and "\n<b>Heads up:</b> this code was made in a different game." or ""),
-            Type = info.OtherGame and "Warning" or "Success",
-            Duration = 8,
-            Buttons = { { Name = "Undo", Callback = info.Undo }, { Name = "Keep" } },
-        })
-        return true
+        codeName = info.Name
+    else
+        local trimmed = string.gsub(text, "^%s+", "")
+        if string.sub(trimmed, 1, 1) ~= "{" or not self:ImportConfig(trimmed) then
+            Prism:Notify({
+                Title = "Couldn't import",
+                Content = "That isn't a config code. Codes start with <b>" .. Prism.ConfigCodePrefix .. ":</b>",
+                Type = "Error",
+            })
+            return false
+        end
+        info = { OtherGame = false }
     end
-    local trimmed = string.gsub(text, "^%s+", "")
-    if string.sub(trimmed, 1, 1) == "{" then
-        local before = serializeFlags()
-        local ok = self:ImportConfig(trimmed)
-        Prism:Notify({
-            Title = ok and "Config imported" or "Invalid config",
-            Content = ok and "Settings applied." or "That doesn't look like a Prism config.",
-            Type = ok and "Success" or "Error",
-            Buttons = ok and { { Name = "Undo", Callback = function() applyFlags(before) end }, { Name = "Keep" } } or nil,
-        })
-        return ok
-    end
+
+    local name = self:_freeConfigName(codeName)
+    local saved = canUseFiles() and self:SaveConfig(name)
+    if saved and self._onConfigSaved then self._onConfigSaved(name) end
     Prism:Notify({
-        Title = "Couldn't import",
-        Content = "That isn't a config code. Codes start with <b>" .. Prism.ConfigCodePrefix .. ":</b>",
-        Type = "Error",
+        Title = saved and ('Imported "' .. name .. '"') or "Config applied",
+        Content = (saved and "Saved to your configs and loaded." or "Applied (this executor can't save files).")
+            .. (info.OtherGame and "\n<b>Heads up:</b> this code was made in a different game." or ""),
+        Type = info.OtherGame and "Warning" or "Success",
+        Duration = 8,
+        Buttons = {
+            {
+                Name = "Undo",
+                Callback = function()
+                    applyFlags(before)
+                    if saved then
+                        self:DeleteConfig(name)
+                        if self.ActiveConfig == name then self.ActiveConfig = nil end
+                        if self._onConfigSaved then self._onConfigSaved(nil) end
+                    end
+                end,
+            },
+            { Name = "Keep" },
+        },
     })
-    return false
+    return true, name
 end
 
 -- Resets every flag (not Prism's own interface settings) to its default.
@@ -8979,43 +9009,6 @@ function Window:ResetConfig()
         end
     end
     return function() applyFlags(before) end
-end
-
--- Config codes posted in chat (by anyone) pop a toast offering to apply.
-function Window:_watchChatCodes()
-    local recent = {}
-    local function seen(text, player)
-        if not self.ChatCodes or self._unloaded then return end
-        local code = Prism:IsConfigCode(text)
-        if not code or recent[code] then return end
-        recent[code] = true
-        task.delay(30, function() recent[code] = nil end)
-        local from = player and (player == LocalPlayer and "you" or player.DisplayName) or "chat"
-        Prism:Notify({
-            Title = "Config code in chat",
-            Content = "Posted by <b>" .. from .. "</b>. Apply it?",
-            Icon = "message-square",
-            Duration = 12,
-            Merge = false,
-            Buttons = {
-                { Name = "Apply", Primary = true, Callback = function() self:ImportAny(code) end },
-                { Name = "Copy", Callback = function() if setclipboard then setclipboard(code) end end },
-                { Name = "Ignore" },
-            },
-        })
-    end
-    pcall(function()
-        local tcs = svc("TextChatService")
-        table.insert(self._conns, tcs.MessageReceived:Connect(function(message)
-            local source = message.TextSource
-            seen(message.Text, source and Players:GetPlayerByUserId(source.UserId))
-        end))
-    end)
-    local function hook(player)
-        table.insert(self._conns, player.Chatted:Connect(function(text) seen(text, player) end))
-    end
-    for _, p in ipairs(Players:GetPlayers()) do pcall(hook, p) end
-    table.insert(self._conns, Players.PlayerAdded:Connect(function(p) pcall(hook, p) end))
 end
 
 -- ============================================================================
